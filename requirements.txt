@@ -1,0 +1,14 @@
+numpy
+scipy
+scikit-learn
+joblib
+fastapi
+uvicorn[standard]
+pydantic
+neurokit2
+pandas
+wfdb
+dash
+plotly
+requests
+websockets

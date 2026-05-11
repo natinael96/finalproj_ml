@@ -1,0 +1,125 @@
+:root{
+  color-scheme: dark;
+  --bg0: oklch(18% 0.03 250);
+  --bg1: oklch(21% 0.03 250);
+  --card: oklch(24% 0.03 250);
+  --line: color-mix(in oklch, white 10%, transparent);
+  --text: oklch(92% 0.02 250);
+  --muted: oklch(75% 0.02 250);
+  --accent: oklch(78% 0.08 205);
+  --good: oklch(78% 0.10 155);
+  --warn: oklch(78% 0.12 65);
+  --bad: oklch(72% 0.15 25);
+  --shadow: 0 12px 40px rgba(0,0,0,.45);
+  --r: 18px;
+}
+
+*{ box-sizing:border-box }
+html,body{ height:100% }
+body{
+  margin:0;
+  background:
+    radial-gradient(1100px 650px at 20% -10%, color-mix(in oklch, var(--accent) 18%, transparent) 0%, transparent 60%),
+    radial-gradient(900px 520px at 110% 10%, color-mix(in oklch, white 12%, transparent) 0%, transparent 58%),
+    linear-gradient(180deg, var(--bg1), var(--bg0));
+  color:var(--text);
+}
+
+a{ color:inherit }
+code{
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: .95em;
+}
+
+.container{ max-width:1100px; margin:28px auto; padding:0 16px }
+.topbar{ display:flex; justify-content:space-between; align-items:flex-end; gap:16px; margin-bottom:18px }
+.brandTitle{ font-size:22px; font-weight:740; letter-spacing:-0.02em }
+.brandSub{ font-size:13px; color:var(--muted) }
+.nav{ display:flex; gap:12px; align-items:center }
+
+.seg{
+  display:inline-flex;
+  border:1px solid var(--line);
+  border-radius:999px;
+  overflow:hidden;
+  background: color-mix(in oklch, var(--card) 65%, transparent);
+}
+.seg button{
+  padding:8px 10px;
+  border:0;
+  background: transparent;
+  color: var(--muted);
+  cursor:pointer;
+  font-size:12px;
+}
+.seg button.active{
+  color: var(--text);
+  background: color-mix(in oklch, white 8%, transparent);
+}
+
+.pill{
+  display:inline-flex; align-items:center; gap:8px;
+  padding:8px 10px; border-radius:999px;
+  border:1px solid var(--line);
+  background: color-mix(in oklch, var(--card) 70%, transparent);
+  box-shadow: 0 8px 24px rgba(0,0,0,.25);
+}
+.dot{
+  width:8px; height:8px; border-radius:99px;
+  background: var(--good);
+  box-shadow: 0 0 0 5px color-mix(in oklch, var(--good) 22%, transparent);
+}
+
+.btn{
+  padding:10px 12px; border-radius:12px;
+  border:1px solid var(--line);
+  background: transparent;
+  color:var(--text);
+  cursor:pointer;
+  transition: transform .12s ease, background .12s ease;
+}
+.btn:hover{ background: color-mix(in oklch, white 6%, transparent) }
+.btn:active{ transform: translateY(1px) }
+.btnPrimary{
+  background: color-mix(in oklch, var(--accent) 22%, transparent);
+  border-color: color-mix(in oklch, var(--accent) 30%, var(--line));
+}
+
+.card{
+  border:1px solid var(--line);
+  background: color-mix(in oklch, var(--card) 72%, transparent);
+  border-radius: var(--r);
+  padding:16px;
+  box-shadow: var(--shadow);
+}
+
+.grid{ display:grid; gap:12px }
+.kpiGrid{ display:grid; grid-template-columns: 1.2fr 1fr 1fr; gap:12px }
+@media (max-width: 860px){ .kpiGrid{ grid-template-columns: 1fr } }
+
+.kpiValue{ font-size:34px; font-weight:760; letter-spacing:-0.04em; line-height:1 }
+.kpiLabel{ font-size:12px; color:var(--muted); letter-spacing:.02em; text-transform:uppercase }
+.kpiMeta{ font-size:12px; color:var(--muted) }
+
+.tableWrap{ overflow:auto; border-radius:14px; border:1px solid var(--line) }
+table{ width:100%; border-collapse:collapse; min-width:780px; background: rgba(0,0,0,.12) }
+thead th{ text-align:left; font-size:12px; color:var(--muted); padding:10px 10px; letter-spacing:.02em; text-transform:uppercase }
+tbody td{ padding:10px 10px; border-top:1px solid color-mix(in oklch, white 8%, transparent) }
+.num{ font-variant-numeric: tabular-nums; }
+.badge{
+  display:inline-flex; align-items:center;
+  padding:6px 10px; border-radius:999px;
+  border:1px solid var(--line);
+  background: color-mix(in oklch, white 6%, transparent);
+  font-size:12px; color:var(--muted);
+  gap:8px;
+}
+
+.input{
+  width:100%;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid var(--line);
+  background: rgba(0,0,0,.22);
+  color: var(--text);
+}

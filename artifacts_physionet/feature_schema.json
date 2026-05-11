@@ -1,0 +1,14 @@
+{
+  "names": [
+    "gyro_rms",
+    "lc_1_mean",
+    "hr_mean_bpm",
+    "rr_mean_s",
+    "lc_2_mean",
+    "acc_rms",
+    "ptt_xcorr_s",
+    "ppg_distal_std",
+    "rr_std_s",
+    "ppg_prox_std"
+  ]
+}

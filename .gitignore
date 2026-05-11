@@ -1,0 +1,91 @@
+# --- Environment & secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+ENV/
+
+# --- Node / Next.js ---
+node_modules/
+dashboard/node_modules/
+.npm
+.pnpm-store/
+.next/
+out/
+dashboard/.next/
+*.tsbuildinfo
+
+# --- ML binaries (keep metrics.json / feature_schema.json etc. if tracked) ---
+artifacts/*.joblib
+artifacts/*.pkl
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# --- Supabase CLI ---
+supabase/.temp/
+dashboard/supabase/.temp/
+
+# --- IDE & OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Testing / coverage ---
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- Logs ---
+*.log
+logs/
+
+
+/node_modules
+/dashboard/node_modules
+/venv
+/dashboard/venv
+/dashboard/.next
+/dashboard/supabase/.temp
+/dashboard/supabase/.temp
+/data/
+/artifacts/
+/artifacts/*
+/artifacts/model.joblib
+/artifacts/feature_schema.json
+/artifacts/metrics.json
+/artifacts/model.joblib
+/artifacts/feature_schema.json
+/artifacts/metrics.json
+/artifacts/model.joblib
+/artifacts/feature_schema.json
+/artifacts/metrics.json
