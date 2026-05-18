@@ -58,10 +58,19 @@ Artifacts produced:
 - `artifacts/feature_schema.json`
 - `artifacts/metrics.json`
 
+## Documentation
+
+Full thesis-style technical write-up (ML pipeline, WebSocket flow, ESP32 issues/fixes):
+
+- [docs/FINAL_YEAR_PROJECT_DOCUMENTATION.md](docs/FINAL_YEAR_PROJECT_DOCUMENTATION.md)
+- [docs/ESP32_WS_PROTOCOL.md](docs/ESP32_WS_PROTOCOL.md)
+
+ESP32 firmware: `firmware/esp32_bp_stream/` (streams to `ws://<PC_IP>:8000/ws/esp32`).
+
 ## Serve
 
 ```bash
-uvicorn bp_api.main:app --reload
+uvicorn bp_api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Then POST:

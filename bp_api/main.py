@@ -37,6 +37,18 @@ def _load_env() -> None:
 _load_env()
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _model_artifact_path() -> Path:
+    raw = os.environ.get("BP_MODEL_PATH", "artifacts/model.joblib")
+    p = Path(raw)
+    if not p.is_absolute():
+        p = _repo_root() / p
+    return p
+
+
 class PredictRequest(BaseModel):
     features: List[float] = Field(..., description="Feature vector aligned with the deployed schema")
 
@@ -51,7 +63,13 @@ class PredictResponse(BaseModel):
 
 @lru_cache(maxsize=1)
 def load_artifact():
-    path = os.environ.get("BP_MODEL_PATH", os.path.join("artifacts", "model.joblib"))
+    path = _model_artifact_path()
+    if not path.is_file():
+        raise RuntimeError(
+            f"Model artifact not found at {path}. "
+            "Train with: python -m bp_pipeline.train --physionet-ptt-dir <data> --out artifacts "
+            "Or create a smoke-test model: python scripts/build_demo_model.py"
+        )
     try:
         bundle = joblib.load(path)
     except Exception as e:
@@ -201,7 +219,20 @@ async def _process_buffered_windows(
     Returns (last_pred, wrote_rows).
     """
     win_n = int(round(float(window_s) * fs))
-    model, schema_names, med_map = load_artifact()
+    try:
+        model, schema_names, med_map = load_artifact()
+    except RuntimeError as e:
+        await ws.send_json({"ok": False, "error": str(e)})
+        # Drop one window so the client does not retry the same samples forever.
+        if min(len(buf.ecg), len(buf.ppg)) >= win_n:
+            del buf.ecg[:win_n]
+            del buf.ppg[:win_n]
+            if buf.accel:
+                del buf.accel[: min(win_n, len(buf.accel))]
+            if buf.gyro:
+                del buf.gyro[: min(win_n, len(buf.gyro))]
+        return None, 0
+
     schema = FeatureSchema(names=schema_names) if schema_names else FeatureSchema(names=[])
 
     wrote = 0

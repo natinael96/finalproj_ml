@@ -1,137 +1,110 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import Link from "next/link";
-import { supabase, supabaseEnvMissing } from "@/lib/supabaseClient";
-
-type WindowRow = {
-  id: string;
-  created_at: string;
-  device_id: string;
-  sbp_pred: number | null;
-  dbp_pred: number | null;
-};
+import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
+import { AuthGate, UserBadge } from "@/components/AuthGate";
+import { Card, SectionHeader } from "@/components/Card";
+import { KpiTile } from "@/components/KpiTile";
+import { TelemetryTable } from "@/components/TelemetryTable";
+import { TrendChart } from "@/components/TrendChart";
+import { summarizeTelemetry } from "@/lib/bp";
+import { downloadCsv, telemetryToCsv } from "@/lib/csv";
+import { formatInteger, pluralize } from "@/lib/format";
+import { useTelemetry } from "@/lib/telemetry";
+import type { DashboardMode } from "@/lib/types";
 
 export default function HistoryPage() {
-  const [rows, setRows] = useState<WindowRow[]>([]);
-  const [device, setDevice] = useState<string>("");
-  const [status, setStatus] = useState<string>("");
-  const [mode, setMode] = useState<"user" | "detailed">("user");
+  return (
+    <AuthGate title="Sign in to review historical windows">
+      {(session) => <HistoryView sessionNode={<UserBadge session={session} />} />}
+    </AuthGate>
+  );
+}
 
-  useEffect(() => {
-    if (!supabase) return;
-    let cancelled = false;
-    (async () => {
-      setStatus("Loading...");
-      const q = supabase
-        .from("telemetry_windows")
-        .select("id,created_at,device_id,sbp_pred,dbp_pred")
-        .order("created_at", { ascending: false })
-        .limit(500);
-      const { data, error } = device ? await q.eq("device_id", device) : await q;
-      if (cancelled) return;
-      if (error) setStatus(`Error: ${error.message}`);
-      else {
-        setRows((data ?? []) as any);
-        setStatus("");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [device]);
-
-  const devices = useMemo(() => {
-    const s = new Set(rows.map((r) => r.device_id).filter(Boolean));
-    return Array.from(s).sort();
-  }, [rows]);
+function HistoryView({ sessionNode }: { sessionNode: ReactNode }) {
+  const [device, setDevice] = useState("");
+  const [mode, setMode] = useState<DashboardMode>("user");
+  const [threshold, setThreshold] = useState(140);
+  const { rows, status, devices } = useTelemetry({ enabled: true, device, limit: 500 });
+  const visibleRows = mode === "user" ? rows.slice(0, 100) : rows;
+  const summary = useMemo(() => summarizeTelemetry(rows, threshold), [rows, threshold]);
 
   return (
-    <div className="container">
-      <div className="topbar" style={{ alignItems: "flex-end" }}>
-        <div>
-          <div className="brandTitle">History</div>
-          <div className="brandSub">Last {mode === "user" ? "100" : "500"} windows</div>
-        </div>
-        <div className="nav">
-          <span className="seg" aria-label="Dashboard mode">
-            <button
-              type="button"
-              className={mode === "user" ? "active" : ""}
-              onClick={() => setMode("user")}
-            >
-              User mode
-            </button>
-            <button
-              type="button"
-              className={mode === "detailed" ? "active" : ""}
-              onClick={() => setMode("detailed")}
-            >
-              Detailed
-            </button>
-          </span>
-          <Link href="/" className="badge">
-            Live
-          </Link>
-        </div>
+    <div className="pageStack">
+      <SectionHeader eyebrow="Historical analytics" title="Telemetry history">
+        {sessionNode}
+      </SectionHeader>
+
+      <div className="fourCol">
+        <KpiTile label="Loaded windows" value={summary.count} meta={status || pluralize(summary.deviceCount, "device")} />
+        <KpiTile label="Mean SBP" value={formatInteger(summary.avgSbp)} unit="mmHg" />
+        <KpiTile label="Mean DBP" value={formatInteger(summary.avgDbp)} unit="mmHg" />
+        <KpiTile label="SBP threshold hits" value={summary.highCount} tone={summary.highCount ? "bad" : "good"} />
       </div>
 
-      <div className="card">
-        {supabaseEnvMissing() ? (
-          <div style={{ color: "var(--muted)", lineHeight: 1.6 }}>
-            Set <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> in{" "}
-            <code>dashboard/.env.local</code>, then restart <code>npm run dev</code>.
+      <Card>
+        <div className="sectionHeader">
+          <div>
+            <div className="cardTitle">Filters and export</div>
+            <p className="muted">Use this page during the demo to show that predictions are stored and auditable.</p>
           </div>
-        ) : null}
-        <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-          <div style={{ color: "var(--muted)" }}>Device filter</div>
-          <select
-            value={device}
-            onChange={(e) => setDevice(e.target.value)}
-            className="input"
-            style={{ width: 220 }}
-          >
-            <option value="">All</option>
-            {devices.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-          {status ? <div style={{ color: "var(--muted)" }}>{status}</div> : null}
+          <div className="rowActions">
+            <button
+              className="btn"
+              type="button"
+              onClick={() => downloadCsv("telemetry_windows.csv", telemetryToCsv(visibleRows))}
+              disabled={visibleRows.length === 0}
+            >
+              Export CSV
+            </button>
+            <span className="seg" aria-label="Dashboard mode">
+              <button type="button" className={mode === "user" ? "active" : ""} onClick={() => setMode("user")}>
+                User mode
+              </button>
+              <button type="button" className={mode === "detailed" ? "active" : ""} onClick={() => setMode("detailed")}>
+                Detailed
+              </button>
+            </span>
+          </div>
         </div>
-
-        <div className="tableWrap">
-          <table>
-            <thead>
-              <tr style={{ textAlign: "left", opacity: 0.85 }}>
-                <th>time</th>
-                <th>device</th>
-                <th>SBP</th>
-                <th>DBP</th>
-                {mode === "detailed" ? <th>id</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(0, mode === "user" ? 100 : 500).map((r) => (
-                <tr key={r.id}>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    {new Date(r.created_at).toLocaleString()}
-                  </td>
-                  <td>{r.device_id}</td>
-                  <td className="num">
-                    {r.sbp_pred == null ? "-" : r.sbp_pred.toFixed(1)}
-                  </td>
-                  <td className="num">
-                    {r.dbp_pred == null ? "-" : r.dbp_pred.toFixed(1)}
-                  </td>
-                  {mode === "detailed" ? <td className="num">{r.id}</td> : null}
-                </tr>
+        <div className="threeCol">
+          <div className="fieldStack">
+            <label htmlFor="device">Device filter</label>
+            <select id="device" value={device} onChange={(event) => setDevice(event.target.value)}>
+              <option value="">All devices</option>
+              {devices.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
               ))}
-            </tbody>
-          </table>
+            </select>
+          </div>
+          <div className="fieldStack">
+            <label htmlFor="threshold">SBP threshold</label>
+            <input
+              id="threshold"
+              type="number"
+              className="input"
+              value={threshold}
+              onChange={(event) => setThreshold(Number(event.target.value))}
+            />
+          </div>
+          <div className="fieldStack">
+            <label>Current view</label>
+            <span className="badge">{mode === "user" ? "Last 100 windows" : "Last 500 windows"}</span>
+          </div>
         </div>
-      </div>
+      </Card>
+
+      <Card>
+        <div className="cardTitle">Trend analytics</div>
+        <TrendChart rows={visibleRows} threshold={threshold} />
+      </Card>
+
+      <Card>
+        <div className="cardTitle">Stored telemetry windows</div>
+        <TelemetryTable rows={visibleRows} mode={mode} />
+      </Card>
     </div>
   );
 }

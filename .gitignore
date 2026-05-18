@@ -69,6 +69,9 @@ htmlcov/
 *.log
 logs/
 
+# --- ESP32 firmware secrets ---
+firmware/**/config.h
+
 
 /node_modules
 /dashboard/node_modules

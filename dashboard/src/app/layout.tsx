@@ -1,19 +1,23 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
+import { AppShell } from "@/components/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "BP Dashboard",
-  description: "Live BP predictions from ESP32 telemetry"
+  title: "Cuffless BP Studio",
+  description: "Multi-page dashboard for cuffless blood pressure prototype telemetry"
 };
 
 export default function RootLayout({
   children
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <AppShell>{children}</AppShell>
+      </body>
     </html>
   );
 }
