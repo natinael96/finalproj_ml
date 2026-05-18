@@ -176,6 +176,8 @@ def _xcorr_lag_seconds(x: np.ndarray, y: np.ndarray, fs: int, max_lag_ms: float 
             best_val = val
             best_lag = lag
 
+    if not np.isfinite(best_val):
+        return float("nan")
     return best_lag / float(fs)
 
 
