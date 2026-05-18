@@ -163,9 +163,10 @@ def extract_features_from_signals(
     ppg_m = apply_motion_mask(ppg_f, m)
     accel_m = accel_xyz[: m.shape[0]][m]
 
-    # Peak detection
+    # Peak detection. PPG peaks must stay on the original time axis for PTT;
+    # masked/compressed PPG is only used for morphology statistics below.
     r = extract_r_peaks(ecg_f, fs_ecg=rates.fs_ecg)
-    p_peaks = ppg_peaks(ppg_m, fs_ppg=rates.fs_ppg)
+    p_peaks = ppg_peaks(ppg_f, fs_ppg=rates.fs_ppg)
 
     # PTT/PWV proxy
     ptt = ptt_series_seconds(r, p_peaks, fs_ecg=rates.fs_ecg, fs_ppg=rates.fs_ppg)

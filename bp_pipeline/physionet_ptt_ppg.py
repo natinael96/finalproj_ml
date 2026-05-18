@@ -154,7 +154,7 @@ def _xcorr_lag_seconds(x: np.ndarray, y: np.ndarray, fs: int, max_lag_ms: float 
     max_lag = int((max_lag_ms / 1000.0) * fs)
     max_lag = max(1, min(max_lag, n - 1))
 
-    # normalized dot products for lags in [-max_lag, +max_lag]
+    # Normalized cross-correlation for lags in [-max_lag, +max_lag].
     lags = range(-max_lag, max_lag + 1)
     best_lag = 0
     best_val = -np.inf
@@ -168,7 +168,10 @@ def _xcorr_lag_seconds(x: np.ndarray, y: np.ndarray, fs: int, max_lag_ms: float 
         else:
             a = x
             b = y
-        val = float(np.dot(a, b))
+        denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+        if denom <= 1e-12 or not np.isfinite(denom):
+            continue
+        val = float(np.dot(a, b) / denom)
         if val > best_val:
             best_val = val
             best_lag = lag
@@ -280,13 +283,14 @@ def _iter_windows(n: int, fs: int, window_s: float, max_windows: int) -> Iterato
     win = int(round(window_s * fs))
     if win <= 0 or n < win:
         return
-    # deterministic evenly-spaced windows
+    # Deterministic non-overlapping windows. Near-duplicate overlapping windows
+    # inflate evaluation metrics when records share one BP label.
     if max_windows <= 0:
         max_windows = 1
     if n == win:
         yield 0, win
         return
-    step = max((n - win) // max_windows, 1)
+    step = win
     start = 0
     k = 0
     while start + win <= n and k < max_windows:

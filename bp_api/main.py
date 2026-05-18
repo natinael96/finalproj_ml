@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -10,10 +11,20 @@ import joblib
 import numpy as np
 import requests
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
-from bp_pipeline.features import FeatureSchema, extract_features_from_signals
+from bp_pipeline.features import DEFAULT_FEATURES, FeatureSchema, extract_features_from_signals
 from bp_pipeline.preprocess import SamplingRates
+
+MAX_BATCH_ROWS = 256
+MAX_FEATURES_PER_ROW = 512
+MAX_FRAME_SAMPLES = 5000
+MAX_BUFFER_SAMPLES = 20000
+MIN_FS_HZ = 20
+MAX_FS_HZ = 1000
+MIN_WINDOW_S = 1.0
+MAX_WINDOW_S = 30.0
 
 def _load_env() -> None:
     """
@@ -50,7 +61,9 @@ def _model_artifact_path() -> Path:
 
 
 class PredictRequest(BaseModel):
-    features: List[float] = Field(..., description="Feature vector aligned with the deployed schema")
+    features: List[float] = Field(
+        ..., min_length=1, max_length=MAX_FEATURES_PER_ROW, description="Feature vector aligned with the deployed schema"
+    )
 
 
 class PredictResponse(BaseModel):
@@ -112,7 +125,27 @@ def _impute_non_finite(x: np.ndarray, names: List[str], med_map: Dict[str, float
     return out
 
 
+def _missing_live_feature_names(names: List[str]) -> List[str]:
+    live_names = set(DEFAULT_FEATURES.names)
+    return [name for name in names if name not in live_names]
+
+
 app = FastAPI(title="BP Predictor API", version="0.1.0")
+_allowed_origins = [
+    origin.strip()
+    for origin in os.environ.get(
+        "BP_API_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _dash_clients: set[WebSocket] = set()
 
@@ -159,17 +192,22 @@ def _supabase_insert_telemetry(row: Dict[str, object]) -> None:
         raise RuntimeError(f"Supabase insert failed {r.status_code}: {r.text}")
 
 
+async def _supabase_insert_telemetry_async(row: Dict[str, object]) -> None:
+    # Keep slow PostgREST calls out of the WebSocket event loop.
+    await asyncio.to_thread(_supabase_insert_telemetry, row)
+
+
 class IngestFrame(BaseModel):
-    device_id: str
+    device_id: str = Field(..., min_length=1, max_length=80)
     ts_ms_start: int
-    fs_hz: int = 100
-    ecg: List[float]
-    ppg: List[float]
-    accel: Optional[List[List[float]]] = None  # rows of [ax, ay, az]
-    gyro: Optional[List[List[float]]] = None  # rows of [gx, gy, gz]
-    session_id: Optional[str] = None
-    user_id: Optional[str] = None  # server-side auth later; for now allow explicit user_id
-    window_s: float = 8.0
+    fs_hz: int = Field(100, ge=MIN_FS_HZ, le=MAX_FS_HZ)
+    ecg: List[float] = Field(..., min_length=1, max_length=MAX_FRAME_SAMPLES)
+    ppg: List[float] = Field(..., min_length=1, max_length=MAX_FRAME_SAMPLES)
+    accel: Optional[List[Tuple[float, float, float]]] = Field(default=None, max_length=MAX_FRAME_SAMPLES)
+    gyro: Optional[List[Tuple[float, float, float]]] = Field(default=None, max_length=MAX_FRAME_SAMPLES)
+    session_id: Optional[str] = Field(default=None, max_length=120)
+    user_id: Optional[str] = Field(default=None, max_length=120)  # server-side auth later; for now explicit user_id
+    window_s: float = Field(8.0, ge=MIN_WINDOW_S, le=MAX_WINDOW_S)
     persist_raw: bool = False
 
 
@@ -181,9 +219,71 @@ class _DeviceBuffer:
         self.gyro: List[List[float]] = []
         self.fs_hz: int = 0
         self.ts_ms_start: int = 0
+        self.last_seen_ms: int = int(time.time() * 1000)
 
 
 _buffers: Dict[str, _DeviceBuffer] = {}
+_buffer_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_buffer(device_id: str, ts_ms_start: Optional[int] = None) -> _DeviceBuffer:
+    buf = _buffers.get(device_id)
+    if buf is None:
+        buf = _DeviceBuffer()
+        _buffers[device_id] = buf
+        buf.ts_ms_start = int(ts_ms_start if ts_ms_start is not None else time.time() * 1000)
+    buf.last_seen_ms = int(time.time() * 1000)
+    return buf
+
+
+def _get_buffer_lock(device_id: str) -> asyncio.Lock:
+    lock = _buffer_locks.get(device_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _buffer_locks[device_id] = lock
+    return lock
+
+
+def _trim_buffer(buf: _DeviceBuffer, max_samples: int = MAX_BUFFER_SAMPLES) -> None:
+    n = min(len(buf.ecg), len(buf.ppg))
+    if n <= max_samples:
+        return
+    drop = n - max_samples
+    del buf.ecg[:drop]
+    del buf.ppg[:drop]
+    if buf.accel:
+        del buf.accel[: min(drop, len(buf.accel))]
+    if buf.gyro:
+        del buf.gyro[: min(drop, len(buf.gyro))]
+    if buf.fs_hz > 0:
+        buf.ts_ms_start += int(1000.0 * drop / float(buf.fs_hz))
+
+
+def _cleanup_buffer(device_id: str) -> None:
+    _buffers.pop(device_id, None)
+    _buffer_locks.pop(device_id, None)
+
+
+def _parse_int_query(ws: WebSocket, name: str, default: int, min_value: int, max_value: int) -> int:
+    raw = ws.query_params.get(name)
+    try:
+        value = int(raw) if raw not in (None, "") else default
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if not min_value <= value <= max_value:
+        raise ValueError(f"{name} must be between {min_value} and {max_value}")
+    return value
+
+
+def _parse_float_query(ws: WebSocket, name: str, default: float, min_value: float, max_value: float) -> float:
+    raw = ws.query_params.get(name)
+    try:
+        value = float(raw) if raw not in (None, "") else default
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not min_value <= value <= max_value:
+        raise ValueError(f"{name} must be between {min_value} and {max_value}")
+    return value
 
 
 class Esp32Sample(BaseModel):
@@ -233,7 +333,7 @@ async def _process_buffered_windows(
                 del buf.gyro[: min(win_n, len(buf.gyro))]
         return None, 0
 
-    schema = FeatureSchema(names=schema_names) if schema_names else FeatureSchema(names=[])
+    schema = FeatureSchema(names=schema_names) if schema_names else DEFAULT_FEATURES
 
     wrote = 0
     last_pred: Optional[Dict[str, float]] = None
@@ -257,10 +357,11 @@ async def _process_buffered_windows(
             accel_xyz=accel_w,
             gyro_xyz=gyro_w,
             rates=SamplingRates(fs_ecg=fs, fs_ppg=fs),
-            schema=schema if schema.names else used_schema,
+            schema=schema,
         )
 
         x = np.asarray(feats_vec, dtype=float).ravel()
+        missing_live_features = _missing_live_feature_names(schema_names)
         if schema_names and x.size != len(schema_names):
             await ws.send_json(
                 {
@@ -269,11 +370,21 @@ async def _process_buffered_windows(
                 }
             )
             break
-        if schema_names:
-            x = _impute_non_finite(x, names=schema_names, med_map=med_map)
+        active_names = schema_names or used_schema.names
+        if active_names:
+            x = _impute_non_finite(x, names=active_names, med_map=med_map)
         if not np.all(np.isfinite(x)):
             await ws.send_json({"ok": False, "error": "non-finite feature values (NaN/Inf) after imputation"})
             break
+        if missing_live_features:
+            await ws.send_json(
+                {
+                    "ok": True,
+                    "warning": "live_feature_schema_mismatch",
+                    "missing_live_features": missing_live_features,
+                    "detail": "Some model features are not computed by the live ESP32 extractor and were imputed.",
+                }
+            )
 
         pred = model.predict([x])
         sbp = float(pred[0][0])
@@ -288,7 +399,7 @@ async def _process_buffered_windows(
                 "ts_ms_start": int(buf.ts_ms_start),
                 "fs_hz": int(fs),
                 "window_s": float(window_s),
-                "schema_names": schema_names or used_schema.names,
+                "schema_names": active_names,
                 "features": x.tolist(),
                 "sbp_pred": sbp,
                 "dbp_pred": dbp,
@@ -299,7 +410,7 @@ async def _process_buffered_windows(
                 row["accel"] = accel_w.tolist()
                 row["gyro"] = gyro_w.tolist()
             try:
-                _supabase_insert_telemetry(row)
+                await _supabase_insert_telemetry_async(row)
                 wrote += 1
             except Exception as e:
                 await ws.send_json({"ok": False, "error": f"db_insert_failed: {e}"})
@@ -311,6 +422,7 @@ async def _process_buffered_windows(
                 "ts_ms_start": int(buf.ts_ms_start),
                 "sbp_pred": sbp,
                 "dbp_pred": dbp,
+                "warning": "live_feature_schema_mismatch" if missing_live_features else None,
             }
         )
 
@@ -330,7 +442,15 @@ def health():
     try:
         _, names, _ = load_artifact()
         sb = supabase_rest_config()
-        return {"ok": True, "n_features": len(names), "supabase": bool(sb)}
+        missing_live_features = _missing_live_feature_names(names)
+        return {
+            "ok": True,
+            "n_features": len(names),
+            "supabase": bool(sb),
+            "live_schema_compatible": len(missing_live_features) == 0,
+            "missing_live_features": missing_live_features,
+            "demo_security": "LAN prototype; REST and WebSocket endpoints are unauthenticated.",
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -339,6 +459,8 @@ def health():
 def predict(req: PredictRequest):
     model, names, med_map = load_artifact()
     x = np.asarray(req.features, dtype=float).ravel()
+    if x.size == 0 or x.size > MAX_FEATURES_PER_ROW:
+        raise HTTPException(status_code=400, detail=f"features must contain 1..{MAX_FEATURES_PER_ROW} values")
     if names and x.size != len(names):
         raise HTTPException(status_code=400, detail=f"Expected {len(names)} features, got {x.size}")
 
@@ -374,7 +496,9 @@ def predict(req: PredictRequest):
 
 
 class PredictBatchRequest(BaseModel):
-    features: List[List[float]] = Field(..., description="List of feature vectors aligned with deployed schema")
+    features: List[List[float]] = Field(
+        ..., min_length=1, max_length=MAX_BATCH_ROWS, description="List of feature vectors aligned with deployed schema"
+    )
 
 
 class PredictBatchResponse(BaseModel):
@@ -386,9 +510,13 @@ class PredictBatchResponse(BaseModel):
 @app.post("/predict_batch", response_model=PredictBatchResponse)
 def predict_batch(req: PredictBatchRequest):
     model, names, med_map = load_artifact()
+    if len(req.features) > MAX_BATCH_ROWS:
+        raise HTTPException(status_code=400, detail=f"At most {MAX_BATCH_ROWS} rows are allowed per batch")
     X = np.asarray(req.features, dtype=float)
     if X.ndim != 2:
         raise HTTPException(status_code=400, detail="features must be a 2D array")
+    if X.shape[0] == 0 or X.shape[1] == 0 or X.shape[1] > MAX_FEATURES_PER_ROW:
+        raise HTTPException(status_code=400, detail=f"Each row must contain 1..{MAX_FEATURES_PER_ROW} features")
     if names and X.shape[1] != len(names):
         raise HTTPException(status_code=400, detail=f"Expected {len(names)} features, got {X.shape[1]}")
     if names:
@@ -407,49 +535,63 @@ def predict_batch(req: PredictBatchRequest):
 @app.websocket("/ws/ingest")
 async def ws_ingest(ws: WebSocket):
     await ws.accept()
+    current_device_id: Optional[str] = None
     try:
         while True:
-            payload = await ws.receive_json()
-            frame = IngestFrame.model_validate(payload)
-
-            buf = _buffers.get(frame.device_id)
-            if buf is None:
-                buf = _DeviceBuffer()
-                _buffers[frame.device_id] = buf
-                buf.ts_ms_start = int(frame.ts_ms_start)
-            if buf.fs_hz == 0:
-                buf.fs_hz = int(frame.fs_hz)
-
-            buf.ecg.extend([float(x) for x in frame.ecg])
-            buf.ppg.extend([float(x) for x in frame.ppg])
-            if frame.accel:
-                buf.accel.extend([[float(a), float(b), float(c)] for a, b, c in frame.accel])
-            if frame.gyro:
-                buf.gyro.extend([[float(a), float(b), float(c)] for a, b, c in frame.gyro])
-
-            fs = int(frame.fs_hz)
-            win_n = int(round(float(frame.window_s) * fs))
-            n = min(len(buf.ecg), len(buf.ppg))
-            if win_n <= 0 or n < win_n:
-                await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n})
+            try:
+                payload = await ws.receive_json()
+                frame = IngestFrame.model_validate(payload)
+            except Exception as e:
+                await ws.send_json({"ok": False, "error": f"invalid_ingest_frame: {e}"})
                 continue
 
-            last_pred, wrote = await _process_buffered_windows(
-                ws,
-                buf,
-                device_id=frame.device_id,
-                user_id=frame.user_id,
-                session_id=frame.session_id,
-                window_s=float(frame.window_s),
-                persist_raw=bool(frame.persist_raw),
-                fs=fs,
-            )
-            n = min(len(buf.ecg), len(buf.ppg))
-            if last_pred is not None:
-                await ws.send_json({"ok": True, "pred": last_pred, "wrote": wrote})
-            else:
-                await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n, "wrote": wrote})
+            current_device_id = frame.device_id
+            async with _get_buffer_lock(frame.device_id):
+                buf = _get_buffer(frame.device_id, ts_ms_start=int(frame.ts_ms_start))
+                if buf.fs_hz == 0:
+                    buf.fs_hz = int(frame.fs_hz)
+
+                buf.ecg.extend([float(x) for x in frame.ecg])
+                buf.ppg.extend([float(x) for x in frame.ppg])
+                if frame.accel:
+                    buf.accel.extend([[float(a), float(b), float(c)] for a, b, c in frame.accel])
+                if frame.gyro:
+                    buf.gyro.extend([[float(a), float(b), float(c)] for a, b, c in frame.gyro])
+                _trim_buffer(buf)
+
+                fs = int(frame.fs_hz)
+                win_n = int(round(float(frame.window_s) * fs))
+                n = min(len(buf.ecg), len(buf.ppg))
+                if win_n <= 0 or n < win_n:
+                    await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n})
+                    continue
+
+                last_pred, wrote = await _process_buffered_windows(
+                    ws,
+                    buf,
+                    device_id=frame.device_id,
+                    user_id=frame.user_id,
+                    session_id=frame.session_id,
+                    window_s=float(frame.window_s),
+                    persist_raw=bool(frame.persist_raw),
+                    fs=fs,
+                )
+                n = min(len(buf.ecg), len(buf.ppg))
+                if last_pred is not None:
+                    await ws.send_json({"ok": True, "pred": last_pred, "wrote": wrote})
+                else:
+                    await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n, "wrote": wrote})
     except WebSocketDisconnect:
+        if current_device_id:
+            _cleanup_buffer(current_device_id)
+        return
+    except Exception as e:
+        if current_device_id:
+            _cleanup_buffer(current_device_id)
+        try:
+            await ws.send_json({"ok": False, "error": f"ingest_handler_failed: {e}"})
+        except Exception:
+            pass
         return
 
 
@@ -471,8 +613,16 @@ async def ws_esp32(ws: WebSocket):
     (FastAPI / uvicorn port, not a separate Node server on 3000.)
     """
     device_id = ws.query_params.get("device_id") or "esp32"
-    fs_hz = int(ws.query_params.get("fs_hz") or 250)
-    window_s = float(ws.query_params.get("window_s") or 8.0)
+    if len(device_id) > 80:
+        device_id = device_id[:80]
+    try:
+        fs_hz = _parse_int_query(ws, "fs_hz", 250, MIN_FS_HZ, MAX_FS_HZ)
+        window_s = _parse_float_query(ws, "window_s", 8.0, MIN_WINDOW_S, MAX_WINDOW_S)
+    except ValueError as e:
+        await ws.accept()
+        await ws.send_json({"ok": False, "error": str(e)})
+        await ws.close()
+        return
     user_id = ws.query_params.get("user_id") or None
     session_id = ws.query_params.get("session_id") or None
     persist_raw = ws.query_params.get("persist_raw", "0") in ("1", "true", "yes")
@@ -485,8 +635,12 @@ async def ws_esp32(ws: WebSocket):
 
     try:
         while True:
-            payload = await ws.receive_json()
-            sample = Esp32Sample.model_validate(payload)
+            try:
+                payload = await ws.receive_json()
+                sample = Esp32Sample.model_validate(payload)
+            except Exception as e:
+                await ws.send_json({"ok": False, "error": f"invalid_esp32_sample: {e}"})
+                continue
 
             ecg_v = float(sample.ecg)
             if ecg_v < 0:
@@ -507,51 +661,57 @@ async def ws_esp32(ws: WebSocket):
             gy = float(sample.gy or 0.0)
             gz = float(sample.gz or 0.0)
 
-            buf = _buffers.get(device_id)
-            if buf is None:
-                buf = _DeviceBuffer()
-                _buffers[device_id] = buf
-                buf.ts_ms_start = int(time.time() * 1000)
-            if buf.fs_hz == 0:
-                buf.fs_hz = fs_hz
+            async with _get_buffer_lock(device_id):
+                buf = _get_buffer(device_id)
+                if buf.fs_hz == 0:
+                    buf.fs_hz = fs_hz
 
-            buf.ecg.append(ecg_v)
-            buf.ppg.append(ppg_v)
-            buf.accel.append([ax, ay, az])
-            buf.gyro.append([gx, gy, gz])
+                buf.ecg.append(ecg_v)
+                buf.ppg.append(ppg_v)
+                buf.accel.append([ax, ay, az])
+                buf.gyro.append([gx, gy, gz])
+                _trim_buffer(buf)
 
-            fs = int(buf.fs_hz) if buf.fs_hz else fs_hz
-            win_n = int(round(window_s * fs))
-            n = min(len(buf.ecg), len(buf.ppg))
+                fs = int(buf.fs_hz) if buf.fs_hz else fs_hz
+                win_n = int(round(window_s * fs))
+                n = min(len(buf.ecg), len(buf.ppg))
 
-            if win_n <= 0:
-                await ws.send_json({"ok": False, "error": "invalid window_s or fs_hz"})
-                continue
+                if win_n <= 0:
+                    await ws.send_json({"ok": False, "error": "invalid window_s or fs_hz"})
+                    continue
 
-            if n < win_n:
-                samples_since_ack += 1
-                if verbose and samples_since_ack >= 50:
-                    samples_since_ack = 0
-                    await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n})
-                continue
+                if n < win_n:
+                    samples_since_ack += 1
+                    if verbose and samples_since_ack >= 50:
+                        samples_since_ack = 0
+                        await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n})
+                    continue
 
-            samples_since_ack = 0
-            last_pred, wrote = await _process_buffered_windows(
-                ws,
-                buf,
-                device_id=device_id,
-                user_id=user_id,
-                session_id=session_id,
-                window_s=window_s,
-                persist_raw=persist_raw,
-                fs=fs,
-            )
-            n = min(len(buf.ecg), len(buf.ppg))
-            if last_pred is not None:
-                await ws.send_json({"ok": True, "pred": last_pred, "wrote": wrote})
-            else:
-                await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n, "wrote": wrote})
+                samples_since_ack = 0
+                last_pred, wrote = await _process_buffered_windows(
+                    ws,
+                    buf,
+                    device_id=device_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    window_s=window_s,
+                    persist_raw=persist_raw,
+                    fs=fs,
+                )
+                n = min(len(buf.ecg), len(buf.ppg))
+                if last_pred is not None:
+                    await ws.send_json({"ok": True, "pred": last_pred, "wrote": wrote})
+                else:
+                    await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n, "wrote": wrote})
     except WebSocketDisconnect:
+        _cleanup_buffer(device_id)
+        return
+    except Exception as e:
+        _cleanup_buffer(device_id)
+        try:
+            await ws.send_json({"ok": False, "error": f"esp32_handler_failed: {e}"})
+        except Exception:
+            pass
         return
 
 

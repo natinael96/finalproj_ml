@@ -42,16 +42,26 @@ def load_csv_features(
     y is shaped (n, 2) for [SBP, DBP].
     """
     df = pd.read_csv(path)
+    required = [cols.ecg, cols.ppg, cols.accel_x, cols.accel_y, cols.accel_z, cols.sbp, cols.dbp]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"Training CSV is missing required columns: {missing}")
 
     X = []
     y = []
-    for _, r in df.iterrows():
+    for row_idx, r in df.iterrows():
         row = r.to_dict()
         ecg = parse_json_array(row[cols.ecg])
         ppg = parse_json_array(row[cols.ppg])
         ax = parse_json_array(row[cols.accel_x])
         ay = parse_json_array(row[cols.accel_y])
         az = parse_json_array(row[cols.accel_z])
+        lengths = {ecg.size, ppg.size, ax.size, ay.size, az.size}
+        if len(lengths) != 1:
+            raise ValueError(
+                f"Row {row_idx} has mismatched signal lengths: "
+                f"ecg={ecg.size}, ppg={ppg.size}, accel_x={ax.size}, accel_y={ay.size}, accel_z={az.size}"
+            )
         accel = np.stack([ax, ay, az], axis=1)
         rates = _row_rates(row, cols=cols, defaults=defaults)
 

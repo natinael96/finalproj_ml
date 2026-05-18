@@ -30,6 +30,12 @@ def _nan_impute(X: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return X2, med
 
 
+def _apply_medians(X: np.ndarray, medians: np.ndarray) -> np.ndarray:
+    X = np.asarray(X, dtype=float)
+    medians = np.asarray(medians, dtype=float)
+    return np.where(np.isfinite(X), X, medians)
+
+
 def select_top_k_features(
     X: np.ndarray, y: np.ndarray, schema: FeatureSchema, k: int, random_state: int
 ) -> FeatureSchema:
@@ -81,7 +87,14 @@ def main() -> None:
     ap.add_argument(
         "--group-by-subject",
         action="store_true",
-        help="When using PhysioNet PTT, split train/test by subject (reduces leakage)",
+        default=True,
+        help="When using PhysioNet PTT, split train/test by subject (default; reduces leakage)",
+    )
+    ap.add_argument(
+        "--random-window-split",
+        action="store_false",
+        dest="group_by_subject",
+        help="Use a random row/window split instead of subject grouping (not recommended for reported metrics)",
     )
     args = ap.parse_args()
 
@@ -102,21 +115,30 @@ def main() -> None:
         X, y = load_csv_features(args.data, schema=full_schema)
     else:
         raise SystemExit("Provide either --physionet-ptt-dir or --data")
-    X, medians = _nan_impute(X)
-
-    keep_schema = select_top_k_features(X, y, schema=full_schema, k=args.top_k, random_state=args.random_state)
-    Xk = slice_schema(X, full_schema=full_schema, keep_schema=keep_schema)
-
     if args.group_by_subject and record_names:
         groups = _subject_group_from_record_names(record_names)
         splitter = GroupShuffleSplit(n_splits=1, test_size=args.test_size, random_state=args.random_state)
-        tr_idx, te_idx = next(splitter.split(Xk, y, groups=groups))
-        X_train, X_test = Xk[tr_idx], Xk[te_idx]
-        y_train, y_test = y[tr_idx], y[te_idx]
+        tr_idx, te_idx = next(splitter.split(X, y, groups=groups))
+        split_method = "group_by_subject"
     else:
-        X_train, X_test, y_train, y_test = train_test_split(
-            Xk, y, test_size=args.test_size, random_state=args.random_state
+        idx = np.arange(X.shape[0])
+        tr_idx, te_idx = train_test_split(
+            idx, test_size=args.test_size, random_state=args.random_state
         )
+        split_method = "random_window"
+
+    X_train_full_raw, X_test_full_raw = X[tr_idx], X[te_idx]
+    y_train, y_test = y[tr_idx], y[te_idx]
+
+    # Fit all preprocessing choices on train only to avoid test-set leakage.
+    X_train_full, medians = _nan_impute(X_train_full_raw)
+    X_test_full = _apply_medians(X_test_full_raw, medians)
+
+    keep_schema = select_top_k_features(
+        X_train_full, y_train, schema=full_schema, k=args.top_k, random_state=args.random_state
+    )
+    X_train = slice_schema(X_train_full, full_schema=full_schema, keep_schema=keep_schema)
+    X_test = slice_schema(X_test_full, full_schema=full_schema, keep_schema=keep_schema)
 
     rf = RandomForestRegressor(
         n_estimators=400,
@@ -132,12 +154,12 @@ def main() -> None:
         random_state=args.random_state + 1,
         n_jobs=-1,
     )
-    ridge = Ridge(alpha=2.0, random_state=args.random_state)
+    ridge = Ridge(alpha=2.0)
 
     # Stacking for *single* target. Wrap with MultiOutputRegressor for (SBP, DBP).
     stack = StackingRegressor(
         estimators=[("rf", rf), ("et", et), ("ridge", ridge)],
-        final_estimator=Ridge(alpha=1.0, random_state=args.random_state),
+        final_estimator=Ridge(alpha=1.0),
         passthrough=True,
         n_jobs=-1,
     )
@@ -152,14 +174,15 @@ def main() -> None:
     rmse_sbp = float(np.sqrt(mean_squared_error(y_test[:, 0], pred[:, 0])))
     rmse_dbp = float(np.sqrt(mean_squared_error(y_test[:, 1], pred[:, 1])))
 
-    metrics: Dict[str, float] = {
+    metrics: Dict[str, object] = {
         "mae_sbp": float(mae_sbp),
         "mae_dbp": float(mae_dbp),
         "rmse_sbp": float(rmse_sbp),
         "rmse_dbp": float(rmse_dbp),
         "n_train": int(X_train.shape[0]),
         "n_test": int(X_test.shape[0]),
-        "n_features": int(Xk.shape[1]),
+        "n_features": int(X_train.shape[1]),
+        "split_method": split_method,
     }
 
     joblib.dump(
