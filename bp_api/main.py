@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from uuid import UUID
 from pathlib import Path
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
@@ -10,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 import joblib
 import numpy as np
 import requests
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -130,6 +131,29 @@ def _missing_live_feature_names(names: List[str]) -> List[str]:
     return [name for name in names if name not in live_names]
 
 
+def _configured_api_key() -> str:
+    return os.environ.get("BP_API_KEY", "").strip()
+
+
+def _require_api_key(x_api_key: Optional[str] = Header(default=None)) -> None:
+    expected = _configured_api_key()
+    if expected and x_api_key != expected:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+
+
+async def _ws_api_key_allowed(ws: WebSocket) -> bool:
+    expected = _configured_api_key()
+    if not expected:
+        return True
+    provided = ws.query_params.get("api_key") or ws.headers.get("x-api-key")
+    if provided == expected:
+        return True
+    await ws.accept()
+    await ws.send_json({"ok": False, "error": "missing_or_invalid_api_key"})
+    await ws.close()
+    return False
+
+
 app = FastAPI(title="BP Predictor API", version="0.1.0")
 _allowed_origins = [
     origin.strip()
@@ -224,6 +248,7 @@ class _DeviceBuffer:
 
 _buffers: Dict[str, _DeviceBuffer] = {}
 _buffer_locks: Dict[str, asyncio.Lock] = {}
+_buffer_refs: Dict[str, int] = {}
 
 
 def _get_buffer(device_id: str, ts_ms_start: Optional[int] = None) -> _DeviceBuffer:
@@ -259,7 +284,16 @@ def _trim_buffer(buf: _DeviceBuffer, max_samples: int = MAX_BUFFER_SAMPLES) -> N
         buf.ts_ms_start += int(1000.0 * drop / float(buf.fs_hz))
 
 
-def _cleanup_buffer(device_id: str) -> None:
+def _retain_buffer(device_id: str) -> None:
+    _buffer_refs[device_id] = _buffer_refs.get(device_id, 0) + 1
+
+
+def _release_buffer(device_id: str) -> None:
+    refs = max(_buffer_refs.get(device_id, 1) - 1, 0)
+    if refs:
+        _buffer_refs[device_id] = refs
+        return
+    _buffer_refs.pop(device_id, None)
     _buffers.pop(device_id, None)
     _buffer_locks.pop(device_id, None)
 
@@ -284,6 +318,16 @@ def _parse_float_query(ws: WebSocket, name: str, default: float, min_value: floa
     if not min_value <= value <= max_value:
         raise ValueError(f"{name} must be between {min_value} and {max_value}")
     return value
+
+
+def _is_uuid(value: Optional[str]) -> bool:
+    if not value:
+        return True
+    try:
+        UUID(str(value))
+        return True
+    except ValueError:
+        return False
 
 
 class Esp32Sample(BaseModel):
@@ -437,7 +481,7 @@ async def _process_buffered_windows(
     return last_pred, wrote
 
 
-@app.get("/health")
+@app.get("/health", dependencies=[Depends(_require_api_key)])
 def health():
     try:
         _, names, _ = load_artifact()
@@ -449,13 +493,13 @@ def health():
             "supabase": bool(sb),
             "live_schema_compatible": len(missing_live_features) == 0,
             "missing_live_features": missing_live_features,
-            "demo_security": "LAN prototype; REST and WebSocket endpoints are unauthenticated.",
+            "demo_security": "Set BP_API_KEY to require an API key for REST and WebSocket demo endpoints.",
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/predict", response_model=PredictResponse)
+@app.post("/predict", response_model=PredictResponse, dependencies=[Depends(_require_api_key)])
 def predict(req: PredictRequest):
     model, names, med_map = load_artifact()
     x = np.asarray(req.features, dtype=float).ravel()
@@ -507,7 +551,7 @@ class PredictBatchResponse(BaseModel):
     schema_names: Optional[List[str]] = None
 
 
-@app.post("/predict_batch", response_model=PredictBatchResponse)
+@app.post("/predict_batch", response_model=PredictBatchResponse, dependencies=[Depends(_require_api_key)])
 def predict_batch(req: PredictBatchRequest):
     model, names, med_map = load_artifact()
     if len(req.features) > MAX_BATCH_ROWS:
@@ -534,6 +578,8 @@ def predict_batch(req: PredictBatchRequest):
 
 @app.websocket("/ws/ingest")
 async def ws_ingest(ws: WebSocket):
+    if not await _ws_api_key_allowed(ws):
+        return
     await ws.accept()
     current_device_id: Optional[str] = None
     try:
@@ -544,8 +590,15 @@ async def ws_ingest(ws: WebSocket):
             except Exception as e:
                 await ws.send_json({"ok": False, "error": f"invalid_ingest_frame: {e}"})
                 continue
+            if not _is_uuid(frame.user_id):
+                await ws.send_json({"ok": False, "error": "user_id must be a UUID when provided"})
+                continue
 
-            current_device_id = frame.device_id
+            if current_device_id != frame.device_id:
+                if current_device_id:
+                    _release_buffer(current_device_id)
+                current_device_id = frame.device_id
+                _retain_buffer(frame.device_id)
             async with _get_buffer_lock(frame.device_id):
                 buf = _get_buffer(frame.device_id, ts_ms_start=int(frame.ts_ms_start))
                 if buf.fs_hz == 0:
@@ -583,11 +636,11 @@ async def ws_ingest(ws: WebSocket):
                     await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n, "wrote": wrote})
     except WebSocketDisconnect:
         if current_device_id:
-            _cleanup_buffer(current_device_id)
+            _release_buffer(current_device_id)
         return
     except Exception as e:
         if current_device_id:
-            _cleanup_buffer(current_device_id)
+            _release_buffer(current_device_id)
         try:
             await ws.send_json({"ok": False, "error": f"ingest_handler_failed: {e}"})
         except Exception:
@@ -612,6 +665,8 @@ async def ws_esp32(ws: WebSocket):
     Firmware should connect to ws://<PC_IP>:8000/ws/esp32?device_id=myboard
     (FastAPI / uvicorn port, not a separate Node server on 3000.)
     """
+    if not await _ws_api_key_allowed(ws):
+        return
     device_id = ws.query_params.get("device_id") or "esp32"
     if len(device_id) > 80:
         device_id = device_id[:80]
@@ -624,11 +679,17 @@ async def ws_esp32(ws: WebSocket):
         await ws.close()
         return
     user_id = ws.query_params.get("user_id") or None
+    if not _is_uuid(user_id):
+        await ws.accept()
+        await ws.send_json({"ok": False, "error": "user_id must be a UUID when provided"})
+        await ws.close()
+        return
     session_id = ws.query_params.get("session_id") or None
     persist_raw = ws.query_params.get("persist_raw", "0") in ("1", "true", "yes")
     verbose = ws.query_params.get("verbose", "0") in ("1", "true", "yes")
 
     await ws.accept()
+    _retain_buffer(device_id)
     last_ecg = 0.0
     last_ppg = 0.0
     samples_since_ack = 0
@@ -704,10 +765,10 @@ async def ws_esp32(ws: WebSocket):
                 else:
                     await ws.send_json({"ok": True, "buffered_n": n, "needed_n": win_n, "wrote": wrote})
     except WebSocketDisconnect:
-        _cleanup_buffer(device_id)
+        _release_buffer(device_id)
         return
     except Exception as e:
-        _cleanup_buffer(device_id)
+        _release_buffer(device_id)
         try:
             await ws.send_json({"ok": False, "error": f"esp32_handler_failed: {e}"})
         except Exception:
@@ -717,6 +778,8 @@ async def ws_esp32(ws: WebSocket):
 
 @app.websocket("/ws/dashboard")
 async def ws_dashboard(ws: WebSocket):
+    if not await _ws_api_key_allowed(ws):
+        return
     await ws.accept()
     _dash_clients.add(ws)
     try:
