@@ -50,7 +50,37 @@ If your dataset is already windowed and you have features, you can bypass raw si
 python -m bp_pipeline.train --data data/train.csv --out artifacts --top-k 20
 ```
 
-### Option B: PhysioNet `pulse-transit-time-ppg/1.1.0` (CSV)\n+\n+After downloading with your terminal (e.g. `wget -r -N -c -np ...`), point training to the extracted dataset root (must contain `CSV/subjects_info.csv`):\n+\n+```bash\n+python -m bp_pipeline.train --physionet-ptt-dir path/to/pulse-transit-time-ppg/1.1.0 --out artifacts --top-k 20 --verbose\n+```
+### Option B: PhysioNet `pulse-transit-time-ppg/1.1.0` (CSV)
+
+After downloading with your terminal (e.g. `wget -r -N -c -np ...`), point training to the extracted dataset root (must contain `CSV/subjects_info.csv`).
+
+For a model artifact that is compatible with live ESP32 inference, use the same generic feature extractor as the API:
+
+```bash
+python -m bp_pipeline.train --physionet-ptt-dir path/to/pulse-transit-time-ppg/1.1.0 --out artifacts_live --top-k 18 --live-compatible --verbose
+```
+
+Then point the API to the live-compatible artifact:
+
+```bash
+set BP_MODEL_PATH=artifacts_live/model.joblib
+```
+
+The older PhysioNet-specific feature path is still available, but it can use dual-PPG/load-cell features that ESP32 live streaming cannot compute:
+
+```bash
+python -m bp_pipeline.train --physionet-ptt-dir path/to/pulse-transit-time-ppg/1.1.0 --out artifacts_physionet --top-k 20 --verbose
+```
+
+### Option C: Matched ESP32 + cuff labels
+
+For the strongest final-year methodology, collect live ESP32 windows with matching cuff SBP/DBP labels and train with the generic CSV format:
+
+```bash
+python -m bp_pipeline.train --data data/esp32_labeled_windows.csv --out artifacts_esp32 --top-k 18 --verbose
+```
+
+That path uses the same `DEFAULT_FEATURES` as `/ws/esp32`, so it avoids the PhysioNet-vs-hardware feature mismatch.
 
 Artifacts produced:
 

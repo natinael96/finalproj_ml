@@ -1037,11 +1037,12 @@ Selected features (`artifacts_physionet/feature_schema.json`):
 
 | Training source | Feature set | Suitable for ESP32 live demo? |
 |-----------------|-------------|-------------------------------|
-| `--physionet-ptt-dir` | `ptt_xcorr_s`, dual PPG, etc. | **Poor** — device lacks dual PPG sites |
+| `--physionet-ptt-dir --live-compatible` | `DEFAULT_FEATURES` extracted by the live API code path | **Best PhysioNet option** — schema matches ESP32 live inference |
+| `--physionet-ptt-dir` | `ptt_xcorr_s`, dual PPG, load-cell, etc. | **Poor for live ESP32** — device lacks dual PPG/load-cell signals |
 | `--data` custom CSV from device windows | `DEFAULT_FEATURES` | **Good** — same code path as API |
-| `build_demo_model.py` | All 16 defaults | **Good for plumbing only** |
+| `build_demo_model.py` | All default live features | **Good for plumbing only** |
 
-Recommended thesis narrative: train PhysioNet for **baseline benchmark numbers**, then collect a small labeled set from your hardware and retrain with `--data` for deployment metrics.
+Recommended thesis narrative: use `--live-compatible` for the live dashboard artifact so `/health` reports `live_schema_compatible: true`. For the strongest deployment metric, collect a small labeled set from your own ESP32 hardware and retrain with `--data`.
 
 ---
 

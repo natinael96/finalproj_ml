@@ -83,6 +83,11 @@ def main() -> None:
     ap.add_argument("--test-size", type=float, default=0.2)
     ap.add_argument("--random-state", type=int, default=42)
     ap.add_argument("--window-s", type=float, default=8.0, help="Window length in seconds (PhysioNet PTT dataset)")
+    ap.add_argument(
+        "--live-compatible",
+        action="store_true",
+        help="When using PhysioNet, train on the same DEFAULT_FEATURES extracted by the live ESP32 API.",
+    )
     ap.add_argument("--verbose", action="store_true", help="Print very verbose extraction/training logs")
     ap.add_argument(
         "--group-by-subject",
@@ -108,6 +113,7 @@ def main() -> None:
             args.physionet_ptt_dir,
             cfg=PhysioNetPttConfig(window_s=args.window_s),
             verbose=bool(args.verbose),
+            live_compatible=bool(args.live_compatible),
         )
         # Override schema to match this dataset’s feature set
         full_schema = FeatureSchema(names=feat_names)
@@ -183,6 +189,8 @@ def main() -> None:
         "n_test": int(X_test.shape[0]),
         "n_features": int(X_train.shape[1]),
         "split_method": split_method,
+        "feature_mode": "live_compatible" if args.live_compatible else "physionet_specific",
+        "live_schema_compatible": bool(set(keep_schema.names).issubset(set(DEFAULT_FEATURES.names))),
     }
 
     joblib.dump(

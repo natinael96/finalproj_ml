@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Card, SectionHeader } from "@/components/Card";
 import { KpiTile } from "@/components/KpiTile";
-import { BP_API_URL } from "@/lib/env";
+import { BP_API_URL, apiHeaders } from "@/lib/env";
 import { parseFeatureRowsFromCsv } from "@/lib/csv";
 import { formatNumber } from "@/lib/format";
 import type { ApiHealth, PredictionResponse } from "@/lib/types";
@@ -28,7 +28,9 @@ export default function LabPage() {
   async function checkHealth() {
     setLabStatus("loading", "Checking API health...");
     try {
-      const response = await fetch(`${apiUrl.replace(/\/$/, "")}/health`);
+      const response = await fetch(`${apiUrl.replace(/\/$/, "")}/health`, {
+        headers: apiHeaders()
+      });
       const data = (await response.json()) as ApiHealth;
       setHealth(data);
       setLabStatus(response.ok ? "success" : "error", response.ok ? "API health loaded." : `Health returned HTTP ${response.status}.`);
@@ -43,7 +45,7 @@ export default function LabPage() {
       const features = JSON.parse(featuresText) as number[];
       const response = await fetch(`${apiUrl.replace(/\/$/, "")}/predict`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ features })
       });
       const data = (await response.json()) as PredictionResponse;
@@ -60,7 +62,7 @@ export default function LabPage() {
       const features = parseFeatureRowsFromCsv(csvText);
       const response = await fetch(`${apiUrl.replace(/\/$/, "")}/predict_batch`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: apiHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ features })
       });
       const data = (await response.json()) as { sbp: number[]; dbp: number[] };

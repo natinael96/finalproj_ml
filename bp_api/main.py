@@ -489,8 +489,11 @@ def health():
         missing_live_features = _missing_live_feature_names(names)
         return {
             "ok": True,
+            "model_loaded": True,
             "n_features": len(names),
+            "feature_count": len(names),
             "supabase": bool(sb),
+            "supabase_configured": bool(sb),
             "live_schema_compatible": len(missing_live_features) == 0,
             "missing_live_features": missing_live_features,
             "demo_security": "Set BP_API_KEY to require an API key for REST and WebSocket demo endpoints.",

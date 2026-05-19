@@ -451,9 +451,9 @@ That is why the project saves `feature_schema.json` and validates feature length
 
 ### Q37. What is the difference between training features and live features?
 
-PhysioNet training can use dual PPG channels and load-cell features, while the ESP32 live system has one PPG channel and no load cell. This creates a domain gap.
+The project now separates two PhysioNet modes. The PhysioNet-specific mode can use dual PPG channels and load-cell features, while the ESP32 live system has one PPG channel and no load cell. That mode is useful for dataset benchmarking, but it is not the right deployment artifact.
 
-For best deployment, the model should be trained using the same feature extraction path as the live ESP32 system.
+For live deployment, train with `--live-compatible`. That extracts the same `DEFAULT_FEATURES` used by `/ws/esp32`, so the backend does not need to impute unavailable PhysioNet-only features. The remaining limitation is dataset/domain shift, which is best addressed with labeled ESP32+cuff data.
 
 ---
 

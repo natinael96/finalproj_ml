@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 import wfdb
 
-from .preprocess import bandpass, nan_interp_1d, ppg_physionet_filter, robust_zscore
+from .features import DEFAULT_FEATURES, extract_features_from_signals
+from .preprocess import SamplingRates, bandpass, nan_interp_1d, ppg_physionet_filter, robust_zscore
 
 
 @dataclass(frozen=True)
@@ -333,6 +334,46 @@ def extract_windowed_features_from_csv(df: pd.DataFrame, *, fs: int, cfg: Physio
         )
 
 
+def extract_live_compatible_windowed_features_from_csv(
+    df: pd.DataFrame, *, fs: int, cfg: PhysioNetPttConfig
+) -> Iterator[Dict[str, float]]:
+    """
+    Extract the exact DEFAULT_FEATURES used by the live ESP32 WebSocket path.
+
+    This intentionally ignores PhysioNet-only dual-PPG/load-cell shortcuts so a
+    trained artifact can be used by live hardware without schema imputation.
+    """
+    if "ecg" not in df.columns:
+        return
+    ppg_col = "pleth_2" if "pleth_2" in df.columns else "pleth_1" if "pleth_1" in df.columns else None
+    if ppg_col is None:
+        return
+    n = int(df.shape[0])
+    ecg = df["ecg"].astype(float).to_numpy()
+    ppg = df[ppg_col].astype(float).to_numpy()
+    acc = (
+        df[["a_x", "a_y", "a_z"]].astype(float).to_numpy()
+        if all(c in df.columns for c in ["a_x", "a_y", "a_z"])
+        else np.zeros((n, 3), dtype=float)
+    )
+    gyr = (
+        df[["g_x", "g_y", "g_z"]].astype(float).to_numpy()
+        if all(c in df.columns for c in ["g_x", "g_y", "g_z"])
+        else np.zeros((n, 3), dtype=float)
+    )
+
+    for a, b in _iter_windows(n, fs=fs, window_s=cfg.window_s, max_windows=cfg.max_windows_per_record):
+        x, schema = extract_features_from_signals(
+            ecg=ecg[a:b],
+            ppg=ppg[a:b],
+            accel_xyz=acc[a:b],
+            gyro_xyz=gyr[a:b],
+            rates=SamplingRates(fs_ecg=fs, fs_ppg=fs),
+            schema=DEFAULT_FEATURES,
+        )
+        yield {name: float(value) for name, value in zip(schema.names, x)}
+
+
 def extract_windowed_features_from_wfdb(
     record: "wfdb.Record", ann: "wfdb.Annotation", *, cfg: PhysioNetPttConfig
 ) -> Iterator[Dict[str, float]]:
@@ -380,6 +421,59 @@ def extract_windowed_features_from_wfdb(
             lc_1=lc_1[a:b] if lc_1 is not None else None,
             lc_2=lc_2[a:b] if lc_2 is not None else None,
         )
+
+
+def extract_live_compatible_windowed_features_from_wfdb(
+    record: "wfdb.Record", ann: "wfdb.Annotation", *, cfg: PhysioNetPttConfig
+) -> Iterator[Dict[str, float]]:
+    """
+    WFDB variant of the live-compatible DEFAULT_FEATURES extractor.
+
+    The annotation is accepted for API symmetry with the PhysioNet-specific path,
+    but R-peaks are deliberately re-detected by extract_features_from_signals to
+    match live ESP32 inference behavior.
+    """
+    _ = ann
+    fs = int(record.fs)
+    sig = record.p_signal
+    n = int(sig.shape[0])
+    names = [str(nm) for nm in record.sig_name]
+    name_to_idx = {nm: i for i, nm in enumerate(names)}
+
+    def col(name: str) -> Optional[np.ndarray]:
+        i = name_to_idx.get(name)
+        return sig[:, i].astype(float) if i is not None else None
+
+    ecg = col("ecg")
+    if ecg is None:
+        return
+    ppg = col("pleth_2")
+    if ppg is None:
+        ppg = col("pleth_1")
+    if ppg is None:
+        return
+
+    acc = (
+        np.stack([col("a_x"), col("a_y"), col("a_z")], axis=1)  # type: ignore[arg-type]
+        if all(k in name_to_idx for k in ["a_x", "a_y", "a_z"])
+        else np.zeros((n, 3), dtype=float)
+    )
+    gyr = (
+        np.stack([col("g_x"), col("g_y"), col("g_z")], axis=1)  # type: ignore[arg-type]
+        if all(k in name_to_idx for k in ["g_x", "g_y", "g_z"])
+        else np.zeros((n, 3), dtype=float)
+    )
+
+    for a, b in _iter_windows(n, fs=fs, window_s=cfg.window_s, max_windows=cfg.max_windows_per_record):
+        x, schema = extract_features_from_signals(
+            ecg=ecg[a:b],
+            ppg=ppg[a:b],
+            accel_xyz=acc[a:b],
+            gyro_xyz=gyr[a:b],
+            rates=SamplingRates(fs_ecg=fs, fs_ppg=fs),
+            schema=DEFAULT_FEATURES,
+        )
+        yield {name: float(value) for name, value in zip(schema.names, x)}
 
 
 def extract_record_features_from_wfdb(record: "wfdb.Record", ann: "wfdb.Annotation") -> Dict[str, float]:
@@ -430,6 +524,7 @@ def load_physionet_ptt_features(
     dataset_root: str | Path,
     cfg: PhysioNetPttConfig,
     verbose: bool = False,
+    live_compatible: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
     """
     Loads the PhysioNet pulse-transit-time-ppg dataset and returns (X, y, feature_names, record_names).
@@ -437,6 +532,9 @@ def load_physionet_ptt_features(
     Supports:
       - CSV if `<root>/CSV/` exists
       - WFDB from record files in `<root>/` (uses `.hea/.dat` + `.atr`)
+
+    If live_compatible=True, features are extracted with the same generic
+    DEFAULT_FEATURES code path used by the ESP32 live API.
     """
     root = Path(dataset_root)
     try:
@@ -464,9 +562,14 @@ def load_physionet_ptt_features(
             sbp, dbp = _bp_label_from_info_row(info.loc[rec_name])
 
             # Per dataset description: ECG/PPG/IMU channels are 500 Hz in the CSV export.
-            for wi, feats in enumerate(extract_windowed_features_from_csv(df, fs=500, cfg=cfg)):
+            extractor = (
+                extract_live_compatible_windowed_features_from_csv
+                if live_compatible
+                else extract_windowed_features_from_csv
+            )
+            for wi, feats in enumerate(extractor(df, fs=500, cfg=cfg)):
                 if feature_names is None:
-                    feature_names = list(feats.keys())
+                    feature_names = list(DEFAULT_FEATURES.names if live_compatible else feats.keys())
                 x = [float(feats[k]) for k in feature_names]
                 X_rows.append(x)
                 y_rows.append([sbp, dbp])
@@ -490,7 +593,11 @@ def load_physionet_ptt_features(
 
             sbp, dbp = _bp_label_from_info_row(info.loc[rec_name])
             try:
-                win_iter = extract_windowed_features_from_wfdb(record, ann, cfg=cfg)
+                win_iter = (
+                    extract_live_compatible_windowed_features_from_wfdb(record, ann, cfg=cfg)
+                    if live_compatible
+                    else extract_windowed_features_from_wfdb(record, ann, cfg=cfg)
+                )
             except Exception as e:
                 if verbose:
                     print(f"[physionet-ptt] skip(feature error): {rec_name} ({e})")
@@ -498,7 +605,7 @@ def load_physionet_ptt_features(
             n_win = 0
             for wi, feats in enumerate(win_iter):
                 if feature_names is None:
-                    feature_names = list(feats.keys())
+                    feature_names = list(DEFAULT_FEATURES.names if live_compatible else feats.keys())
                 x = [float(feats[k]) for k in feature_names]
                 X_rows.append(x)
                 y_rows.append([sbp, dbp])
