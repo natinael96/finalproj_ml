@@ -1001,11 +1001,12 @@ At WebSocket inference, `extract_features_from_signals` is called with `schema=F
 ### 10.6 Example commands
 
 ```bash
-# PhysioNet training (recommended)
+# PhysioNet training for ESP32 live deployment (recommended)
 python -m bp_pipeline.train \
   --physionet-ptt-dir data/pulse-transit-time-ppg/1.1.0 \
   --out artifacts \
   --top-k 10 \
+  --esp32-compatible \
   --group-by-subject \
   --verbose
 
@@ -1037,12 +1038,13 @@ Selected features (`artifacts_physionet/feature_schema.json`):
 
 | Training source | Feature set | Suitable for ESP32 live demo? |
 |-----------------|-------------|-------------------------------|
-| `--physionet-ptt-dir --live-compatible` | `DEFAULT_FEATURES` extracted by the live API code path | **Best PhysioNet option** — schema matches ESP32 live inference |
+| `--physionet-ptt-dir --esp32-compatible` | Single-PPG `DEFAULT_FEATURES`, 250 Hz live stream, 50 Hz held PPG simulation | **Best PhysioNet option for ESP32** — schema and timing better match live inference |
+| `--physionet-ptt-dir --live-compatible` | `DEFAULT_FEATURES` extracted by the live API code path | Good schema match, but less realistic than `--esp32-compatible` because it does not simulate MAX30100 held PPG |
 | `--physionet-ptt-dir` | `ptt_xcorr_s`, dual PPG, load-cell, etc. | **Poor for live ESP32** — device lacks dual PPG/load-cell signals |
 | `--data` custom CSV from device windows | `DEFAULT_FEATURES` | **Good** — same code path as API |
 | `build_demo_model.py` | All default live features | **Good for plumbing only** |
 
-Recommended thesis narrative: use `--live-compatible` for the live dashboard artifact so `/health` reports `live_schema_compatible: true`. For the strongest deployment metric, collect a small labeled set from your own ESP32 hardware and retrain with `--data`.
+Recommended thesis narrative: use `--esp32-compatible` for the live dashboard artifact so `/health` reports `live_schema_compatible: true` while training from a single PPG stream shaped closer to the ESP32/MAX30100 path. For the strongest deployment metric, collect a small labeled set from your own ESP32 hardware and retrain with `--data`.
 
 ---
 

@@ -88,6 +88,21 @@ def main() -> None:
         action="store_true",
         help="When using PhysioNet, train on the same DEFAULT_FEATURES extracted by the live ESP32 API.",
     )
+    ap.add_argument(
+        "--esp32-compatible",
+        action="store_true",
+        help=(
+            "PhysioNet training mode for ESP32 deployment: implies --live-compatible, "
+            "uses one PPG channel, resamples to 250 Hz, and simulates MAX30100 50 Hz PPG hold."
+        ),
+    )
+    ap.add_argument("--live-target-fs", type=int, default=250, help="Target stream rate for --esp32-compatible")
+    ap.add_argument(
+        "--live-ppg-effective-fs",
+        type=int,
+        default=50,
+        help="Effective single-PPG rate to simulate for --esp32-compatible",
+    )
     ap.add_argument("--verbose", action="store_true", help="Print very verbose extraction/training logs")
     ap.add_argument(
         "--group-by-subject",
@@ -102,18 +117,38 @@ def main() -> None:
         help="Use a random row/window split instead of subject grouping (not recommended for reported metrics)",
     )
     args = ap.parse_args()
+    if args.esp32_compatible and not args.physionet_ptt_dir:
+        raise SystemExit("--esp32-compatible is only valid with --physionet-ptt-dir")
+    if args.live_target_fs <= 0 or args.live_ppg_effective_fs <= 0:
+        raise SystemExit("--live-target-fs and --live-ppg-effective-fs must be positive")
+    if args.live_ppg_effective_fs > args.live_target_fs:
+        raise SystemExit("--live-ppg-effective-fs must be <= --live-target-fs")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     full_schema = DEFAULT_FEATURES
     record_names: List[str] = []
+    live_compatible = bool(args.live_compatible or args.esp32_compatible)
+    feature_mode = "custom_csv"
     if args.physionet_ptt_dir:
+        feature_mode = (
+            "esp32_single_ppg"
+            if args.esp32_compatible
+            else "live_compatible"
+            if live_compatible
+            else "physionet_specific"
+        )
         X, y, feat_names, record_names = load_physionet_ptt_features(
             args.physionet_ptt_dir,
-            cfg=PhysioNetPttConfig(window_s=args.window_s),
+            cfg=PhysioNetPttConfig(
+                window_s=args.window_s,
+                live_target_fs=args.live_target_fs,
+                live_ppg_effective_fs=args.live_ppg_effective_fs,
+                simulate_esp32_ppg_hold=bool(args.esp32_compatible),
+            ),
             verbose=bool(args.verbose),
-            live_compatible=bool(args.live_compatible),
+            live_compatible=live_compatible,
         )
         # Override schema to match this dataset’s feature set
         full_schema = FeatureSchema(names=feat_names)
@@ -189,8 +224,11 @@ def main() -> None:
         "n_test": int(X_test.shape[0]),
         "n_features": int(X_train.shape[1]),
         "split_method": split_method,
-        "feature_mode": "live_compatible" if args.live_compatible else "physionet_specific",
+        "feature_mode": feature_mode,
         "live_schema_compatible": bool(set(keep_schema.names).issubset(set(DEFAULT_FEATURES.names))),
+        "window_s": float(args.window_s),
+        "live_target_fs": int(args.live_target_fs) if args.esp32_compatible else None,
+        "live_ppg_effective_fs": int(args.live_ppg_effective_fs) if args.esp32_compatible else None,
     }
 
     joblib.dump(
@@ -199,6 +237,12 @@ def main() -> None:
             "schema": keep_schema.to_dict(),
             "full_schema": full_schema.to_dict(),
             "medians_full_schema": medians.tolist(),
+            "training_config": {
+                "feature_mode": metrics["feature_mode"],
+                "window_s": float(args.window_s),
+                "live_target_fs": int(args.live_target_fs) if args.esp32_compatible else None,
+                "live_ppg_effective_fs": int(args.live_ppg_effective_fs) if args.esp32_compatible else None,
+            },
         },
         out_dir / "model.joblib",
     )

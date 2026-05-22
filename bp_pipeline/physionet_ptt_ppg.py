@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import gcd
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.signal import resample_poly
 import wfdb
 
 from .features import DEFAULT_FEATURES, extract_features_from_signals
@@ -20,6 +22,9 @@ class PhysioNetPttConfig:
 
     window_s: float = 8.0
     max_windows_per_record: int = 30
+    live_target_fs: int = 250
+    live_ppg_effective_fs: int = 50
+    simulate_esp32_ppg_hold: bool = False
 
 
 def _find_subjects_info_anywhere(root: Path) -> Path:
@@ -180,6 +185,88 @@ def _xcorr_lag_seconds(x: np.ndarray, y: np.ndarray, fs: int, max_lag_ms: float 
     if not np.isfinite(best_val):
         return float("nan")
     return best_lag / float(fs)
+
+
+def _fit_length(x: np.ndarray, target_n: int) -> np.ndarray:
+    x = np.asarray(x, dtype=float)
+    if target_n <= 0:
+        return x[:0].copy()
+    if x.shape[0] == target_n:
+        return x
+    if x.shape[0] > target_n:
+        return x[:target_n]
+    if x.shape[0] == 0:
+        pad_shape = (target_n,) + x.shape[1:]
+        return np.zeros(pad_shape, dtype=float)
+    pad_n = target_n - x.shape[0]
+    pad = np.repeat(x[-1:], pad_n, axis=0)
+    return np.concatenate([x, pad], axis=0)
+
+
+def _resample_1d(x: np.ndarray, src_fs: int, dst_fs: int, target_n: int) -> np.ndarray:
+    x = nan_interp_1d(np.asarray(x, dtype=float).ravel())
+    if x.size == 0:
+        return np.zeros(target_n, dtype=float)
+    if src_fs == dst_fs:
+        return _fit_length(x, target_n)
+    factor = gcd(int(src_fs), int(dst_fs))
+    y = resample_poly(x, int(dst_fs) // factor, int(src_fs) // factor)
+    return _fit_length(y, target_n)
+
+
+def _resample_2d(x: np.ndarray, src_fs: int, dst_fs: int, target_n: int) -> np.ndarray:
+    a = np.asarray(x, dtype=float)
+    if a.ndim != 2 or a.shape[0] == 0:
+        return np.zeros((target_n, 3), dtype=float)
+    if src_fs == dst_fs:
+        return _fit_length(a, target_n)
+    factor = gcd(int(src_fs), int(dst_fs))
+    cols = [
+        resample_poly(nan_interp_1d(a[:, col]), int(dst_fs) // factor, int(src_fs) // factor)
+        for col in range(a.shape[1])
+    ]
+    return _fit_length(np.stack(cols, axis=1), target_n)
+
+
+def _simulate_esp32_ppg_stream(ppg: np.ndarray, src_fs: int, cfg: PhysioNetPttConfig) -> np.ndarray:
+    """
+    Approximate the ESP32 MAX30100 path: one PPG channel sampled at a lower
+    effective rate, then held/repeated inside the 250 Hz WebSocket stream.
+    """
+    target_n = int(round(cfg.window_s * cfg.live_target_fs))
+    effective_n = int(round(cfg.window_s * cfg.live_ppg_effective_fs))
+    if target_n <= 0 or effective_n <= 0:
+        return np.array([], dtype=float)
+
+    ppg_eff = _resample_1d(
+        ppg,
+        src_fs=src_fs,
+        dst_fs=cfg.live_ppg_effective_fs,
+        target_n=effective_n,
+    )
+    idx = np.floor(np.arange(target_n) * cfg.live_ppg_effective_fs / cfg.live_target_fs).astype(int)
+    idx = np.clip(idx, 0, max(ppg_eff.size - 1, 0))
+    return ppg_eff[idx]
+
+
+def _prepare_live_window(
+    *,
+    ecg: np.ndarray,
+    ppg: np.ndarray,
+    acc: np.ndarray,
+    gyr: np.ndarray,
+    src_fs: int,
+    cfg: PhysioNetPttConfig,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    if not cfg.simulate_esp32_ppg_hold:
+        return ecg, ppg, acc, gyr, src_fs
+
+    target_n = int(round(cfg.window_s * cfg.live_target_fs))
+    ecg_live = _resample_1d(ecg, src_fs=src_fs, dst_fs=cfg.live_target_fs, target_n=target_n)
+    ppg_live = _simulate_esp32_ppg_stream(ppg, src_fs=src_fs, cfg=cfg)
+    acc_live = _resample_2d(acc, src_fs=src_fs, dst_fs=cfg.live_target_fs, target_n=target_n)
+    gyr_live = _resample_2d(gyr, src_fs=src_fs, dst_fs=cfg.live_target_fs, target_n=target_n)
+    return ecg_live, ppg_live, acc_live, gyr_live, cfg.live_target_fs
 
 
 def extract_record_features_from_arrays(
@@ -363,12 +450,20 @@ def extract_live_compatible_windowed_features_from_csv(
     )
 
     for a, b in _iter_windows(n, fs=fs, window_s=cfg.window_s, max_windows=cfg.max_windows_per_record):
-        x, schema = extract_features_from_signals(
+        ecg_w, ppg_w, acc_w, gyr_w, feature_fs = _prepare_live_window(
             ecg=ecg[a:b],
             ppg=ppg[a:b],
-            accel_xyz=acc[a:b],
-            gyro_xyz=gyr[a:b],
-            rates=SamplingRates(fs_ecg=fs, fs_ppg=fs),
+            acc=acc[a:b],
+            gyr=gyr[a:b],
+            src_fs=fs,
+            cfg=cfg,
+        )
+        x, schema = extract_features_from_signals(
+            ecg=ecg_w,
+            ppg=ppg_w,
+            accel_xyz=acc_w,
+            gyro_xyz=gyr_w,
+            rates=SamplingRates(fs_ecg=feature_fs, fs_ppg=feature_fs),
             schema=DEFAULT_FEATURES,
         )
         yield {name: float(value) for name, value in zip(schema.names, x)}
@@ -465,12 +560,20 @@ def extract_live_compatible_windowed_features_from_wfdb(
     )
 
     for a, b in _iter_windows(n, fs=fs, window_s=cfg.window_s, max_windows=cfg.max_windows_per_record):
-        x, schema = extract_features_from_signals(
+        ecg_w, ppg_w, acc_w, gyr_w, feature_fs = _prepare_live_window(
             ecg=ecg[a:b],
             ppg=ppg[a:b],
-            accel_xyz=acc[a:b],
-            gyro_xyz=gyr[a:b],
-            rates=SamplingRates(fs_ecg=fs, fs_ppg=fs),
+            acc=acc[a:b],
+            gyr=gyr[a:b],
+            src_fs=fs,
+            cfg=cfg,
+        )
+        x, schema = extract_features_from_signals(
+            ecg=ecg_w,
+            ppg=ppg_w,
+            accel_xyz=acc_w,
+            gyro_xyz=gyr_w,
+            rates=SamplingRates(fs_ecg=feature_fs, fs_ppg=feature_fs),
             schema=DEFAULT_FEATURES,
         )
         yield {name: float(value) for name, value in zip(schema.names, x)}

@@ -2,11 +2,11 @@
 
 // Copy this file to `config.h` in the same folder (config.h is gitignored).
 
-#define WIFI_SSID "your-wifi-ssid"
-#define WIFI_PASSWORD "your-wifi-password"
+#define WIFI_SSID "W"
+#define WIFI_PASSWORD "hotspot11012"
 
 // PC running: uvicorn bp_api.main:app --host 0.0.0.0 --port 8000
-#define WS_HOST "192.168.1.100"
+#define WS_HOST "10.169.150.87"
 #define WS_PORT 8000
 
 #define WS_DEVICE_ID "esp32-001"

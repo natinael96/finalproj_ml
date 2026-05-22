@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import json
 import os
+import socket
 import time
 from uuid import UUID
 from pathlib import Path
 from functools import lru_cache
+from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
 import joblib
@@ -26,6 +30,7 @@ MIN_FS_HZ = 20
 MAX_FS_HZ = 1000
 MIN_WINDOW_S = 1.0
 MAX_WINDOW_S = 30.0
+_synthetic_csv_lock = Lock()
 
 def _load_env() -> None:
     """
@@ -55,6 +60,14 @@ def _repo_root() -> Path:
 
 def _model_artifact_path() -> Path:
     raw = os.environ.get("BP_MODEL_PATH", "artifacts/model.joblib")
+    p = Path(raw)
+    if not p.is_absolute():
+        p = _repo_root() / p
+    return p
+
+
+def _synthetic_csv_path() -> Path:
+    raw = os.environ.get("BP_SYNTHETIC_CSV_PATH", "artifacts/synthetic_telemetry.csv")
     p = Path(raw)
     if not p.is_absolute():
         p = _repo_root() / p
@@ -171,6 +184,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def _local_lan_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return str(s.getsockname()[0])
+    except Exception:
+        return "YOUR_PC_LAN_IP"
+
+
+@app.on_event("startup")
+async def _print_runtime_urls() -> None:
+    port = int(os.environ.get("BP_API_PORT", "8000"))
+    lan_ip = os.environ.get("BP_API_LAN_IP", "").strip() or _local_lan_ip()
+    local_base = f"http://127.0.0.1:{port}"
+    lan_base = f"http://{lan_ip}:{port}"
+    print("", flush=True)
+    print("BP Predictor API ready", flush=True)
+    print(f"  Local API:        {local_base}", flush=True)
+    print(f"  LAN API:          {lan_base}", flush=True)
+    print(f"  Health:           {local_base}/health", flush=True)
+    print(f"  ESP32 WebSocket:  ws://{lan_ip}:{port}/ws/esp32?device_id=esp32-01&fs_hz=250&window_s=8", flush=True)
+    print(f"  Dashboard WS:     ws://127.0.0.1:{port}/ws/dashboard", flush=True)
+    print(f"  Synthetic CSV:    {_synthetic_csv_path()}", flush=True)
+    print("", flush=True)
+
+
 _dash_clients: set[WebSocket] = set()
 
 async def _dash_broadcast(msg: Dict[str, object]) -> None:
@@ -221,6 +261,52 @@ async def _supabase_insert_telemetry_async(row: Dict[str, object]) -> None:
     await asyncio.to_thread(_supabase_insert_telemetry, row)
 
 
+def _append_synthetic_telemetry_csv(row: Dict[str, object]) -> None:
+    path = _synthetic_csv_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "created_at_ms",
+        "device_id",
+        "ts_ms_start",
+        "fs_hz",
+        "window_s",
+        "sbp_pred",
+        "dbp_pred",
+        "schema_names",
+        "features",
+        "ecg",
+        "ppg",
+        "accel",
+        "gyro",
+    ]
+    serializable = {
+        "created_at_ms": int(time.time() * 1000),
+        "device_id": row.get("device_id", ""),
+        "ts_ms_start": row.get("ts_ms_start", ""),
+        "fs_hz": row.get("fs_hz", ""),
+        "window_s": row.get("window_s", ""),
+        "sbp_pred": row.get("sbp_pred", ""),
+        "dbp_pred": row.get("dbp_pred", ""),
+        "schema_names": json.dumps(row.get("schema_names", [])),
+        "features": json.dumps(row.get("features", [])),
+        "ecg": json.dumps(row.get("ecg", [])),
+        "ppg": json.dumps(row.get("ppg", [])),
+        "accel": json.dumps(row.get("accel", [])),
+        "gyro": json.dumps(row.get("gyro", [])),
+    }
+    with _synthetic_csv_lock:
+        exists = path.exists()
+        with path.open("a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not exists:
+                writer.writeheader()
+            writer.writerow(serializable)
+
+
+async def _append_synthetic_telemetry_csv_async(row: Dict[str, object]) -> None:
+    await asyncio.to_thread(_append_synthetic_telemetry_csv, row)
+
+
 class IngestFrame(BaseModel):
     device_id: str = Field(..., min_length=1, max_length=80)
     ts_ms_start: int
@@ -241,6 +327,7 @@ class _DeviceBuffer:
         self.ppg: List[float] = []
         self.accel: List[List[float]] = []
         self.gyro: List[List[float]] = []
+        self.synthetic: List[bool] = []
         self.fs_hz: int = 0
         self.ts_ms_start: int = 0
         self.last_seen_ms: int = int(time.time() * 1000)
@@ -280,6 +367,8 @@ def _trim_buffer(buf: _DeviceBuffer, max_samples: int = MAX_BUFFER_SAMPLES) -> N
         del buf.accel[: min(drop, len(buf.accel))]
     if buf.gyro:
         del buf.gyro[: min(drop, len(buf.gyro))]
+    if buf.synthetic:
+        del buf.synthetic[: min(drop, len(buf.synthetic))]
     if buf.fs_hz > 0:
         buf.ts_ms_start += int(1000.0 * drop / float(buf.fs_hz))
 
@@ -345,6 +434,7 @@ class Esp32Sample(BaseModel):
     gx: Optional[float] = None
     gy: Optional[float] = None
     gz: Optional[float] = None
+    synthetic: Optional[bool] = None
 
 
 async def _process_buffered_windows(
@@ -375,6 +465,8 @@ async def _process_buffered_windows(
                 del buf.accel[: min(win_n, len(buf.accel))]
             if buf.gyro:
                 del buf.gyro[: min(win_n, len(buf.gyro))]
+        if buf.synthetic:
+            del buf.synthetic[: min(win_n, len(buf.synthetic))]
         return None, 0
 
     schema = FeatureSchema(names=schema_names) if schema_names else DEFAULT_FEATURES
@@ -394,6 +486,7 @@ async def _process_buffered_windows(
             if buf.gyro and len(buf.gyro) >= win_n
             else np.zeros((win_n, 3), dtype=float)
         )
+        synthetic_w = bool(any(buf.synthetic[:win_n])) if buf.synthetic else False
 
         feats_vec, used_schema = extract_features_from_signals(
             ecg=ecg_w,
@@ -433,28 +526,44 @@ async def _process_buffered_windows(
         pred = model.predict([x])
         sbp = float(pred[0][0])
         dbp = float(pred[0][1])
-        last_pred = {"sbp": sbp, "dbp": dbp}
+        last_pred = {"sbp": sbp, "dbp": dbp, "synthetic": synthetic_w}
 
-        if supabase_rest_config() and user_id:
-            row = {
+        telemetry_row = {
+            "device_id": device_id,
+            "ts_ms_start": int(buf.ts_ms_start),
+            "fs_hz": int(fs),
+            "window_s": float(window_s),
+            "schema_names": active_names,
+            "features": x.tolist(),
+            "sbp_pred": sbp,
+            "dbp_pred": dbp,
+        }
+
+        if synthetic_w:
+            csv_row = {
+                **telemetry_row,
+                "ecg": ecg_w.tolist(),
+                "ppg": ppg_w.tolist(),
+                "accel": accel_w.tolist(),
+                "gyro": gyro_w.tolist(),
+            }
+            try:
+                await _append_synthetic_telemetry_csv_async(csv_row)
+            except Exception as e:
+                await ws.send_json({"ok": False, "error": f"synthetic_csv_write_failed: {e}"})
+        elif supabase_rest_config() and user_id:
+            db_row = {
+                **telemetry_row,
                 "user_id": user_id,
                 "session_id": session_id,
-                "device_id": device_id,
-                "ts_ms_start": int(buf.ts_ms_start),
-                "fs_hz": int(fs),
-                "window_s": float(window_s),
-                "schema_names": active_names,
-                "features": x.tolist(),
-                "sbp_pred": sbp,
-                "dbp_pred": dbp,
             }
             if persist_raw:
-                row["ecg"] = ecg_w.tolist()
-                row["ppg"] = ppg_w.tolist()
-                row["accel"] = accel_w.tolist()
-                row["gyro"] = gyro_w.tolist()
+                db_row["ecg"] = ecg_w.tolist()
+                db_row["ppg"] = ppg_w.tolist()
+                db_row["accel"] = accel_w.tolist()
+                db_row["gyro"] = gyro_w.tolist()
             try:
-                await _supabase_insert_telemetry_async(row)
+                await _supabase_insert_telemetry_async(db_row)
                 wrote += 1
             except Exception as e:
                 await ws.send_json({"ok": False, "error": f"db_insert_failed: {e}"})
@@ -467,6 +576,7 @@ async def _process_buffered_windows(
                 "sbp_pred": sbp,
                 "dbp_pred": dbp,
                 "warning": "live_feature_schema_mismatch" if missing_live_features else None,
+                "synthetic": synthetic_w,
             }
         )
 
@@ -476,6 +586,8 @@ async def _process_buffered_windows(
             del buf.accel[: min(win_n, len(buf.accel))]
         if buf.gyro:
             del buf.gyro[: min(win_n, len(buf.gyro))]
+        if buf.synthetic:
+            del buf.synthetic[: min(win_n, len(buf.synthetic))]
         buf.ts_ms_start += int(1000.0 * float(window_s))
 
     return last_pred, wrote
@@ -613,6 +725,7 @@ async def ws_ingest(ws: WebSocket):
                     buf.accel.extend([[float(a), float(b), float(c)] for a, b, c in frame.accel])
                 if frame.gyro:
                     buf.gyro.extend([[float(a), float(b), float(c)] for a, b, c in frame.gyro])
+                buf.synthetic.extend([False] * min(len(frame.ecg), len(frame.ppg)))
                 _trim_buffer(buf)
 
                 fs = int(frame.fs_hz)
@@ -734,6 +847,7 @@ async def ws_esp32(ws: WebSocket):
                 buf.ppg.append(ppg_v)
                 buf.accel.append([ax, ay, az])
                 buf.gyro.append([gx, gy, gz])
+                buf.synthetic.append(bool(sample.synthetic))
                 _trim_buffer(buf)
 
                 fs = int(buf.fs_hz) if buf.fs_hz else fs_hz

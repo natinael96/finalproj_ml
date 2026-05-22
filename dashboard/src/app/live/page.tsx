@@ -60,6 +60,9 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
           <div className="heroStrip">
             <AlertBadge tone={band.tone}>{band.label}</AlertBadge>
             <AlertBadge tone={liveTone}>{liveLabel}</AlertBadge>
+            <AlertBadge tone={summary.latest?.synthetic ? "warn" : summary.latest?.synthetic === false ? "good" : "neutral"}>
+              {summary.latest?.synthetic ? "Synthetic fallback" : summary.latest?.synthetic === false ? "Sensor data" : "Source unknown"}
+            </AlertBadge>
             <span className="badge">device {summary.latest?.device_id ?? "-"}</span>
             <span className="badge">time {formatShortTime(summary.latest?.created_at)}</span>
             <span className="badge">user {sessionId.slice(0, 8)}...</span>
@@ -89,7 +92,12 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
       <div className="kpiGrid">
         <KpiTile label="Average SBP" value={formatInteger(summary.avgSbp)} unit="mmHg" />
         <KpiTile label="Average DBP" value={formatInteger(summary.avgDbp)} unit="mmHg" />
-        <KpiTile label="Active devices" value={summary.deviceCount} meta={status || telemetryStatus.message || band.detail} tone={band.tone} />
+        <KpiTile
+          label="Active devices"
+          value={summary.deviceCount}
+          meta={summary.syntheticCount ? `${summary.syntheticCount} synthetic fallback window(s)` : status || telemetryStatus.message || band.detail}
+          tone={summary.syntheticCount ? "warn" : band.tone}
+        />
       </div>
 
       <div className="threeCol">

@@ -26,6 +26,7 @@ export function TelemetryTable({
             <th>device</th>
             <th>SBP</th>
             <th>DBP</th>
+            <th>source</th>
             <th>σ SBP</th>
             <th>σ DBP</th>
             {mode === "detailed" ? <th>id</th> : null}
@@ -38,6 +39,7 @@ export function TelemetryTable({
               <td>{row.device_id}</td>
               <td className="num">{formatNumber(row.sbp_pred)}</td>
               <td className="num">{formatNumber(row.dbp_pred)}</td>
+              <td>{row.synthetic == null ? "unknown" : row.synthetic ? "synthetic" : "sensor"}</td>
               <td className="num">{formatNumber(row.sbp_std, 2)}</td>
               <td className="num">{formatNumber(row.dbp_std, 2)}</td>
               {mode === "detailed" ? <td className="num">{row.id}</td> : null}

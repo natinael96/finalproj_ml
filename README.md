@@ -54,10 +54,10 @@ python -m bp_pipeline.train --data data/train.csv --out artifacts --top-k 20
 
 After downloading with your terminal (e.g. `wget -r -N -c -np ...`), point training to the extracted dataset root (must contain `CSV/subjects_info.csv`).
 
-For a model artifact that is compatible with live ESP32 inference, use the same generic feature extractor as the API:
+For a model artifact that is closest to the live ESP32 setup, use the ESP32-compatible PhysioNet mode. It trains on the generic live feature schema, uses one PPG channel, resamples windows to a 250 Hz stream, and simulates the MAX30100's 50 Hz PPG value being held between updates:
 
 ```bash
-python -m bp_pipeline.train --physionet-ptt-dir path/to/pulse-transit-time-ppg/1.1.0 --out artifacts_live --top-k 18 --live-compatible --verbose
+python -m bp_pipeline.train --physionet-ptt-dir path/to/pulse-transit-time-ppg/1.1.0 --out artifacts_live --top-k 18 --esp32-compatible --verbose
 ```
 
 Then point the API to the live-compatible artifact:

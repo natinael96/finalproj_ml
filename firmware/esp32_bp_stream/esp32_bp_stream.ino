@@ -20,6 +20,7 @@
 #include <WebSocketsClient.h>
 #include "time.h"
 #include "esp_timer.h"
+#include <math.h>
 
 #if __has_include("config.h")
 #include "config.h"
@@ -50,16 +51,21 @@ MAX30100 ppgSensor;
 
 static const float PPG_ALPHA = 0.90f;
 static const uint16_t PPG_MIN_RAW = 100;
+static const unsigned long PPG_STALE_MS = 2000;
+static const unsigned long SENSOR_WARN_MS = 5000;
 
 volatile uint32_t ppgIrFiltered = 0;
 volatile uint32_t ppgRedFiltered = 0;
 volatile uint32_t ppgDrainOverflows = 0;
+volatile unsigned long ppgLastValidMs = 0;
+bool ppgAvailable = false;
 
 // ============================= MPU6050 =============================
 Adafruit_MPU6050 mpu;
 sensors_event_t accelEvent;
 sensors_event_t gyroEvent;
 sensors_event_t tempEvent;
+bool mpuAvailable = false;
 
 float imuAx = 0.0f;
 float imuAy = 0.0f;
@@ -70,6 +76,8 @@ float imuGz = 0.0f;
 
 // ============================= ECG =============================
 int ecgRaw = 0;
+bool lastSynthetic = false;
+unsigned long lastSensorWarnMs = 0;
 
 // ============================= WiFi / WebSocket =============================
 WebSocketsClient webSocket;
@@ -86,6 +94,10 @@ uint32_t wsSendFailures = 0;
 
 // ============================= PPG FIFO service =============================
 void ppgDrainOnce() {
+  if (!ppgAvailable) {
+    return;
+  }
+
   ppgSensor.update();
 
   uint16_t ir = 0;
@@ -99,6 +111,7 @@ void ppgDrainOnce() {
       float redF = (PPG_ALPHA * (float)ppgRedFiltered) + ((1.0f - PPG_ALPHA) * (float)red);
       ppgIrFiltered = (uint32_t)irF;
       ppgRedFiltered = (uint32_t)redF;
+      ppgLastValidMs = millis();
     }
   }
 
@@ -224,6 +237,9 @@ int readEcgRaw() {
 }
 
 void readImu() {
+  if (!mpuAvailable) {
+    return;
+  }
   if (!mpu.getEvent(&accelEvent, &gyroEvent, &tempEvent)) {
     return;
   }
@@ -235,14 +251,62 @@ void readImu() {
   imuGz = gyroEvent.gyro.z;
 }
 
-bool sendSampleWs(uint32_t tUs, int ecg, uint32_t ir, uint32_t red) {
-  char buf[220];
+float pulseShape(float phase, float center, float width) {
+  float d = phase - center;
+  if (d < -0.5f) {
+    d += 1.0f;
+  } else if (d > 0.5f) {
+    d -= 1.0f;
+  }
+  return expf(-(d * d) / (2.0f * width * width));
+}
+
+int syntheticEcg(uint32_t tUs) {
+  const float t = (float)tUs / 1000000.0f;
+  const float phase = t - floorf(t);
+  const float qrs = pulseShape(phase, 0.02f, 0.012f);
+  const float baseline = 2048.0f + 35.0f * sinf(2.0f * PI * 0.30f * t);
+  const float noise = (float)random(-18, 19);
+  return constrain((int)(baseline + 1050.0f * qrs + noise), 0, 4095);
+}
+
+uint32_t syntheticPpg(uint32_t tUs, bool redChannel) {
+  const float t = (float)tUs / 1000000.0f;
+  const float phase = t - floorf(t);
+  const float systolic = pulseShape(phase, 0.20f, 0.055f);
+  const float notch = pulseShape(phase, 0.43f, 0.035f);
+  const float baseline = redChannel ? 26000.0f : 32000.0f;
+  const float amp = redChannel ? 1200.0f : 1800.0f;
+  const float noise = (float)random(-70, 71);
+  return (uint32_t)max(0, (int)(baseline + amp * systolic - 0.20f * amp * notch + noise));
+}
+
+void syntheticImu(uint32_t tUs) {
+  const float t = (float)tUs / 1000000.0f;
+  imuAx = 0.08f * sinf(2.0f * PI * 0.50f * t) + ((float)random(-10, 11) / 1000.0f);
+  imuAy = 0.06f * cosf(2.0f * PI * 0.40f * t) + ((float)random(-10, 11) / 1000.0f);
+  imuAz = 9.81f + 0.04f * sinf(2.0f * PI * 0.25f * t);
+  imuGx = 0.015f * sinf(2.0f * PI * 0.30f * t);
+  imuGy = 0.015f * cosf(2.0f * PI * 0.35f * t);
+  imuGz = 0.010f * sinf(2.0f * PI * 0.20f * t);
+}
+
+bool ppgLooksInvalid(uint32_t ir, uint32_t red) {
+  return ir < PPG_MIN_RAW || red < PPG_MIN_RAW || (millis() - ppgLastValidMs) > PPG_STALE_MS;
+}
+
+bool ecgLooksInvalid(int ecg) {
+  return ecg <= 5 || ecg >= 4090;
+}
+
+bool sendSampleWs(uint32_t tUs, int ecg, uint32_t ir, uint32_t red, bool synthetic) {
+  char buf[260];
   const int n = snprintf(
       buf,
       sizeof(buf),
       "{\"t\":%lu,\"ecg\":%d,\"ir\":%lu,\"red\":%lu,"
       "\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
-      "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f}",
+      "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"synthetic\":%s}",
       (unsigned long)tUs,
       ecg,
       (unsigned long)ir,
@@ -252,7 +316,8 @@ bool sendSampleWs(uint32_t tUs, int ecg, uint32_t ir, uint32_t red) {
       imuAz,
       imuGx,
       imuGy,
-      imuGz);
+      imuGz,
+      synthetic ? "true" : "false");
 
   if (n <= 0 || n >= (int)sizeof(buf)) {
     return false;
@@ -261,7 +326,7 @@ bool sendSampleWs(uint32_t tUs, int ecg, uint32_t ir, uint32_t red) {
 }
 
 #if DEBUG_SERIAL
-void printDebugJson(uint32_t tUs, int ecg, uint32_t ir, uint32_t red) {
+void printDebugJson(uint32_t tUs, int ecg, uint32_t ir, uint32_t red, bool synthetic) {
   static unsigned long lastPrint = 0;
   if (millis() - lastPrint < 100) {
     return;
@@ -311,6 +376,8 @@ void printDebugJson(uint32_t tUs, int ecg, uint32_t ir, uint32_t red) {
   Serial.print(imuGz, 3);
   Serial.print(",\"ppg_overflows\":");
   Serial.print((unsigned long)ppgDrainOverflows);
+  Serial.print(",\"synthetic\":");
+  Serial.print(synthetic ? "true" : "false");
   Serial.println("}");
 }
 #endif
@@ -327,29 +394,27 @@ void setup() {
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000);
 
-  if (!ppgSensor.begin()) {
-    Serial.println("[fatal] MAX30100 init failed");
-    while (true) {
-      delay(1000);
-    }
+  ppgAvailable = ppgSensor.begin();
+  if (!ppgAvailable) {
+    Serial.println("[warn] MAX30100 init failed; using synthetic PPG fallback");
+  } else {
+    ppgSensor.setMode(MAX30100_MODE_SPO2_HR);
+    ppgSensor.setLedsCurrent(MAX30100_LED_CURR_27_1MA, MAX30100_LED_CURR_27_1MA);
+    ppgSensor.setSamplingRate(MAX30100_SAMPRATE_50HZ);
+    ppgSensor.setLedsPulseWidth(MAX30100_SPC_PW_1600US_16BITS);
+    ppgSensor.setHighresModeEnabled(true);
   }
 
-  ppgSensor.setMode(MAX30100_MODE_SPO2_HR);
-  ppgSensor.setLedsCurrent(MAX30100_LED_CURR_27_1MA, MAX30100_LED_CURR_27_1MA);
-  ppgSensor.setSamplingRate(MAX30100_SAMPRATE_50HZ);
-  ppgSensor.setLedsPulseWidth(MAX30100_SPC_PW_1600US_16BITS);
-  ppgSensor.setHighresModeEnabled(true);
-
-  if (!mpu.begin()) {
-    Serial.println("[fatal] MPU6050 init failed");
-    while (true) {
-      delay(1000);
-    }
+  mpuAvailable = mpu.begin();
+  if (!mpuAvailable) {
+    Serial.println("[warn] MPU6050 init failed; using synthetic IMU fallback");
+  } else {
+    mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   }
 
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  randomSeed((uint32_t)esp_timer_get_time() ^ (uint32_t)analogRead(ECG_PIN));
 
   buildWsPath();
 
@@ -400,11 +465,34 @@ void loop() {
   sampleIndex++;
 
   const uint32_t tUs = (uint32_t)nowUs;
-  const uint32_t ir = ppgIrFiltered;
-  const uint32_t red = ppgRedFiltered;
+  uint32_t ir = ppgIrFiltered;
+  uint32_t red = ppgRedFiltered;
+  bool synthetic = false;
+
+  if (ecgLooksInvalid(ecgRaw)) {
+    ecgRaw = syntheticEcg(tUs);
+    synthetic = true;
+  }
+
+  if (ppgLooksInvalid(ir, red)) {
+    ir = syntheticPpg(tUs, false);
+    red = syntheticPpg(tUs, true);
+    synthetic = true;
+  }
+
+  if (!mpuAvailable) {
+    syntheticImu(tUs);
+    synthetic = true;
+  }
+
+  lastSynthetic = synthetic;
+  if (synthetic && (millis() - lastSensorWarnMs) > SENSOR_WARN_MS) {
+    lastSensorWarnMs = millis();
+    Serial.println("[warn] streaming synthetic fallback data; JSON field synthetic=true");
+  }
 
   if (webSocket.isConnected()) {
-    if (sendSampleWs(tUs, ecgRaw, ir, red)) {
+    if (sendSampleWs(tUs, ecgRaw, ir, red, synthetic)) {
       samplesSent++;
     } else {
       wsSendFailures++;
@@ -412,6 +500,6 @@ void loop() {
   }
 
 #if DEBUG_SERIAL
-  printDebugJson(tUs, ecgRaw, ir, red);
+  printDebugJson(tUs, ecgRaw, ir, red, synthetic);
 #endif
 }
