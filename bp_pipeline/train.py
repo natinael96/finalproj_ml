@@ -40,7 +40,7 @@ from sklearn.linear_model import Ridge
 
 from .dataset import load_csv_features
 from .features import DEFAULT_FEATURES, FeatureSchema
-from .inference import PerOutputIsotonicCalibrator, predict_from_feature_dict
+from .inference import PerOutputIsotonicCalibrator, apply_bp_constraints, predict_from_feature_dict
 from .physionet_ptt_ppg import PhysioNetPttConfig, load_physionet_ptt_features
 
 # ---------------------------------------------------------------------------
@@ -164,6 +164,121 @@ def slice_schema(X: np.ndarray, full_schema: FeatureSchema, keep_schema: Feature
     name_to_idx = {n: i for i, n in enumerate(full_schema.names)}
     idx = [name_to_idx[n] for n in keep_schema.names]
     return X[:, idx]
+
+
+def _group_cv_mae(
+    estimator,
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    n_splits: int = 5,
+) -> float:
+    n_unique = len(np.unique(groups))
+    if n_unique < 2:
+        return float("inf")
+    n_splits = min(n_splits, n_unique)
+    cv = GroupKFold(n_splits=n_splits)
+    maes: List[float] = []
+    for tr, val in cv.split(X, y, groups=groups):
+        est = clone(estimator)
+        est.fit(X[tr], y[tr])
+        pred = est.predict(X[val])
+        maes.append(float(mean_absolute_error(y[val], pred)))
+    return float(np.mean(maes))
+
+
+def _build_simple_model(max_depth: int, random_state: int) -> ExtraTreesRegressor:
+    return ExtraTreesRegressor(
+        n_estimators=500,
+        max_depth=max_depth,
+        min_samples_leaf=5,
+        min_samples_split=8,
+        max_features="sqrt",
+        random_state=random_state,
+        n_jobs=-1,
+    )
+
+
+def _tune_simple_model(
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: Optional[np.ndarray],
+    random_state: int,
+) -> ExtraTreesRegressor:
+    """Pick max_depth by subject-grouped CV on the training fold."""
+    if groups is None or len(np.unique(groups)) < 3:
+        return _build_simple_model(max_depth=8, random_state=random_state)
+
+    best_depth = 8
+    best_mae = float("inf")
+    for depth in (6, 8, 10, 12):
+        est = _build_simple_model(max_depth=depth, random_state=random_state)
+        mae = _group_cv_mae(est, X, y, groups, n_splits=5)
+        if mae < best_mae:
+            best_mae = mae
+            best_depth = depth
+    print(f"[train] simple model CV MAE={best_mae:.3f} mmHg  max_depth={best_depth}")
+    return _build_simple_model(max_depth=best_depth, random_state=random_state)
+
+
+def _loso_cv_metrics(
+    X: np.ndarray,
+    y: np.ndarray,
+    groups: np.ndarray,
+    model_factory,
+    *,
+    feat_idx: List[int],
+    calibrator: Optional[PerOutputIsotonicCalibrator],
+    apply_constraints: bool,
+) -> Dict[str, float]:
+    """Leave-one-subject-out CV (honest metric for small cohorts)."""
+    subjects = np.unique(groups)
+    sbp_maes: List[float] = []
+    dbp_maes: List[float] = []
+    for subj in subjects:
+        te = groups == subj
+        tr = ~te
+        if tr.sum() < 10 or te.sum() < 1:
+            continue
+        imp = SimpleImputer(strategy="median")
+        X_tr = imp.fit_transform(X[tr])[:, feat_idx]
+        X_te = imp.transform(X[te])[:, feat_idx]
+        y_tr, y_te = y[tr], y[te]
+        model = clone(model_factory())
+        model.fit(X_tr, y_tr)
+        pred = model.predict(X_te)
+        if calibrator is not None:
+            # Fit calibrator on a slice of train only (avoid leakage from test subject)
+            pred_tr = model.predict(X_tr)
+            cal = PerOutputIsotonicCalibrator().fit(pred_tr, y_tr)
+            pred = cal.transform(pred)
+        if apply_constraints:
+            pred = apply_bp_constraints(pred)
+        sbp_maes.append(float(mean_absolute_error(y_te[:, 0], pred[:, 0])))
+        dbp_maes.append(float(mean_absolute_error(y_te[:, 1], pred[:, 1])))
+    if not sbp_maes:
+        return {}
+    return {
+        "loso_mae_sbp": float(np.mean(sbp_maes)),
+        "loso_mae_dbp": float(np.mean(dbp_maes)),
+        "loso_mae_sbp_std": float(np.std(sbp_maes)),
+        "loso_mae_dbp_std": float(np.std(dbp_maes)),
+        "loso_n_subjects": len(sbp_maes),
+    }
+
+
+def _subject_calib_split(
+    train_groups: np.ndarray,
+    calib_fraction: float,
+    random_state: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Hold out whole subjects for calibration (not random windows)."""
+    subjects = np.unique(train_groups)
+    n_calib = max(1, int(round(len(subjects) * calib_fraction)))
+    rng = np.random.default_rng(random_state)
+    calib_subjects = set(rng.choice(subjects, size=min(n_calib, len(subjects)), replace=False))
+    calib_mask = np.array([g in calib_subjects for g in train_groups], dtype=bool)
+    return calib_mask, ~calib_mask
 
 
 # ---------------------------------------------------------------------------
@@ -428,31 +543,62 @@ def main() -> None:
     ap.add_argument("--top-k", type=int, default=40,
                     help="Keep top-k features (default 40, up from 20)")
     ap.add_argument("--test-size", type=float, default=0.2)
-    ap.add_argument("--calib-size", type=float, default=0.1,
-                    help="Fraction of training data held out for isotonic calibration")
+    ap.add_argument("--calib-size", type=float, default=0.0,
+                    help="Fraction of training subjects for isotonic calibration (0 = disabled)")
     ap.add_argument("--random-state", type=int, default=42)
     ap.add_argument("--window-s", type=float, default=8.0)
     ap.add_argument(
         "--max-windows-per-record",
         type=int,
-        default=40,
-        help="Max evenly-spaced 8 s windows sampled per PhysioNet recording (default 40)",
+        default=20,
+        help="Max evenly-spaced windows per PhysioNet recording (default 20)",
     )
     ap.add_argument("--live-compatible", action="store_true")
     ap.add_argument("--esp32-compatible", action="store_true")
     ap.add_argument("--live-target-fs", type=int, default=250)
     ap.add_argument("--live-ppg-effective-fs", type=int, default=50)
+    ap.add_argument(
+        "--wfdb-only",
+        action="store_true",
+        help="Load PhysioNet from WFDB (.hea/.dat/.atr) only; ignore CSV exports",
+    )
+    ap.add_argument(
+        "--csv-only",
+        action="store_true",
+        help="Load PhysioNet from CSV exports only; do not read WFDB binaries",
+    )
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--group-by-subject", action="store_true", default=True)
     ap.add_argument("--random-window-split", action="store_false", dest="group_by_subject")
-    ap.add_argument("--optuna-trials", type=int, default=60,
-                    help="Optuna tuning trials per estimator (0 = skip)")
-    ap.add_argument("--meta-learner", choices=["ridge", "gbm", "xgb"], default="gbm",
-                    help="Meta-learner for the joint stacking regressor")
+    ap.add_argument("--optuna-trials", type=int, default=0,
+                    help="Optuna tuning trials per estimator when --stacking (0 = skip)")
+    ap.add_argument(
+        "--stacking",
+        action="store_true",
+        help="Use joint RF+ET+GBM stacking (default: regularized ExtraTrees, better for small N)",
+    )
+    ap.add_argument(
+        "--loso-cv",
+        action="store_true",
+        default=True,
+        help="Report leave-one-subject-out CV metrics (default: on)",
+    )
+    ap.add_argument(
+        "--no-loso-cv",
+        action="store_false",
+        dest="loso_cv",
+        help="Skip leave-one-subject-out CV (faster training)",
+    )
+    ap.add_argument("--meta-learner", choices=["ridge", "gbm", "xgb"], default="ridge",
+                    help="Meta-learner when --stacking is set")
     args = ap.parse_args()
 
+    if args.wfdb_only and args.csv_only:
+        raise SystemExit("Choose at most one of --wfdb-only / --csv-only")
     if args.esp32_compatible and not args.physionet_ptt_dir:
         raise SystemExit("--esp32-compatible requires --physionet-ptt-dir")
+
+    physionet_source = "wfdb" if args.wfdb_only else "csv" if args.csv_only else "auto"
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -482,6 +628,7 @@ def main() -> None:
             ),
             verbose=bool(args.verbose),
             live_compatible=live_compatible,
+            source=physionet_source,
         )
         full_schema = FeatureSchema(names=feat_names)
     elif args.data:
@@ -510,13 +657,22 @@ def main() -> None:
     y_train, y_test = y[tr_idx], y[te_idx]
 
     # ------------------------------------------------------------------
-    # Calibration split (carved from training set)
+    # Calibration split (optional; subject-grouped when possible)
     # ------------------------------------------------------------------
-    calib_n = max(1, int(len(tr_idx) * args.calib_size))
-    rng = np.random.default_rng(args.random_state)
-    calib_mask = np.zeros(len(X_train_raw), dtype=bool)
-    calib_mask[rng.choice(len(X_train_raw), calib_n, replace=False)] = True
-    fit_mask = ~calib_mask
+    use_calib = args.calib_size > 0
+    if use_calib and train_groups is not None:
+        calib_mask, fit_mask = _subject_calib_split(
+            train_groups, args.calib_size, args.random_state
+        )
+    elif use_calib:
+        calib_n = max(1, int(len(tr_idx) * args.calib_size))
+        rng = np.random.default_rng(args.random_state)
+        calib_mask = np.zeros(len(X_train_raw), dtype=bool)
+        calib_mask[rng.choice(len(X_train_raw), calib_n, replace=False)] = True
+        fit_mask = ~calib_mask
+    else:
+        calib_mask = np.zeros(len(X_train_raw), dtype=bool)
+        fit_mask = np.ones(len(X_train_raw), dtype=bool)
 
     X_fit_raw = X_train_raw[fit_mask]
     y_fit = y_train[fit_mask]
@@ -529,8 +685,12 @@ def main() -> None:
     # ------------------------------------------------------------------
     imputer = SimpleImputer(strategy="median")
     X_fit = imputer.fit_transform(X_fit_raw)
-    X_calib = imputer.transform(X_calib_raw)
     X_test = imputer.transform(X_test_raw)
+    X_calib = (
+        imputer.transform(X_calib_raw)
+        if X_calib_raw.shape[0] > 0
+        else np.empty((0, X_fit.shape[1]), dtype=float)
+    )
 
     # ------------------------------------------------------------------
     # Cross-validated feature selection
@@ -548,44 +708,52 @@ def main() -> None:
     X_test_sel = X_test[:, feat_idx]
 
     # ------------------------------------------------------------------
-    # Optuna tuning
+    # Build and fit model
     # ------------------------------------------------------------------
-    rf_kwargs, et_kwargs = {}, {}
-    if args.optuna_trials > 0:
-        print(f"[tune] Running {args.optuna_trials} Optuna trials per estimator...")
-        rf_kwargs, et_kwargs = _optuna_tune(
-            X_fit_sel, y_fit, fit_groups, args.optuna_trials, args.random_state
+    model_kind = "stacking" if args.stacking else "simple_extratrees"
+    base_ests: List[Tuple[str, object]] = []
+
+    if args.stacking:
+        rf_kwargs, et_kwargs = {}, {}
+        if args.optuna_trials > 0:
+            print(f"[train] Running {args.optuna_trials} Optuna trials per estimator...")
+            rf_kwargs, et_kwargs = _optuna_tune(
+                X_fit_sel, y_fit, fit_groups, args.optuna_trials, args.random_state
+            )
+        base_ests = _build_base_estimators(rf_kwargs, et_kwargs, args.random_state)
+        meta_joint = _build_meta_estimator(args.meta_learner, args.random_state)
+        model = JointStackingRegressor(
+            base_estimators=base_ests,
+            meta_estimator=meta_joint,
+            cv=5,
+            passthrough=True,
         )
+        print(f"[train] Fitting joint stacking model on {X_fit_sel.shape} ...")
+        model.fit(X_fit_sel, y_fit, groups=fit_groups)
+    else:
+        tuned = _tune_simple_model(X_fit_sel, y_fit, fit_groups, args.random_state)
+        print(f"[train] Fitting regularized ExtraTrees on {X_fit_sel.shape} ...")
+        model = tuned
+        model.fit(X_fit_sel, y_fit)
 
     # ------------------------------------------------------------------
-    # Build and fit joint stacking model
+    # Isotonic calibration (optional)
     # ------------------------------------------------------------------
-    base_ests = _build_base_estimators(rf_kwargs, et_kwargs, args.random_state)
-    meta_joint = _build_meta_estimator(args.meta_learner, args.random_state)
-
-    model = JointStackingRegressor(
-        base_estimators=base_ests,
-        meta_estimator=meta_joint,
-        cv=5,
-        passthrough=True,
-    )
-
-    print(f"[train] Fitting joint stacking model on {X_fit_sel.shape} ...")
-    model.fit(X_fit_sel, y_fit, groups=fit_groups)
-
-    # ------------------------------------------------------------------
-    # Isotonic calibration on held-out calib set
-    # ------------------------------------------------------------------
-    pred_calib = model.predict(X_calib_sel)
-    calibrator = PerOutputIsotonicCalibrator()
-    calibrator.fit(pred_calib, y_calib)
-    print("[calib] Isotonic calibrators fitted on calib split.")
+    calibrator: Optional[PerOutputIsotonicCalibrator] = None
+    if use_calib and X_calib_sel.shape[0] >= 10:
+        pred_calib = model.predict(X_calib_sel)
+        calibrator = PerOutputIsotonicCalibrator()
+        calibrator.fit(pred_calib, y_calib)
+        print(f"[calib] Isotonic calibrators fitted on {X_calib_sel.shape[0]} calib windows.")
+    elif use_calib:
+        print("[calib] Skipped — not enough calibration windows (need >= 10).")
 
     # ------------------------------------------------------------------
     # Evaluation on held-out test set
     # ------------------------------------------------------------------
     pred_test_raw = model.predict(X_test_sel)
-    pred_test = calibrator.transform(pred_test_raw)
+    pred_test = calibrator.transform(pred_test_raw) if calibrator is not None else pred_test_raw
+    pred_test = apply_bp_constraints(pred_test)
 
     mae_sbp = float(mean_absolute_error(y_test[:, 0], pred_test[:, 0]))
     mae_dbp = float(mean_absolute_error(y_test[:, 1], pred_test[:, 1]))
@@ -607,6 +775,31 @@ def main() -> None:
     within5_sbp = float(np.mean(np.abs(y_test[:, 0] - pred_test[:, 0]) <= 5.0))
     within5_dbp = float(np.mean(np.abs(y_test[:, 1] - pred_test[:, 1]) <= 5.0))
 
+    loso_metrics: Dict[str, float] = {}
+    if args.loso_cv and record_names and not args.stacking:
+        all_groups = _subject_group_from_record_names(record_names)
+        depth = int(getattr(model, "max_depth", 8))
+        print("[train] Running leave-one-subject-out CV ...")
+
+        def _factory() -> ExtraTreesRegressor:
+            return _build_simple_model(max_depth=depth, random_state=args.random_state)
+
+        loso_metrics = _loso_cv_metrics(
+            X,
+            y,
+            all_groups,
+            _factory,
+            feat_idx=feat_idx,
+            calibrator=None,
+            apply_constraints=True,
+        )
+        if loso_metrics:
+            print(
+                f"[loso] MAE SBP={loso_metrics['loso_mae_sbp']:.2f} "
+                f"DBP={loso_metrics['loso_mae_dbp']:.2f} "
+                f"(n={int(loso_metrics['loso_n_subjects'])} subjects)"
+            )
+
     metrics: Dict[str, object] = {
         "mae_sbp": mae_sbp,
         "mae_dbp": mae_dbp,
@@ -624,19 +817,21 @@ def main() -> None:
         "n_features": int(X_fit_sel.shape[1]),
         "split_method": split_method,
         "feature_mode": feature_mode,
-        "meta_learner": args.meta_learner,
-        "optuna_trials": args.optuna_trials,
-        "base_estimators": [name for name, _ in base_ests],
+        "model_kind": model_kind,
+        "meta_learner": args.meta_learner if args.stacking else None,
+        "optuna_trials": args.optuna_trials if args.stacking else 0,
+        "base_estimators": [name for name, _ in base_ests] if base_ests else ["extratrees"],
         "live_schema_compatible": bool(
             set(keep_schema.names).issubset(set(DEFAULT_FEATURES.names))
         ),
         "window_s": float(args.window_s),
         "max_windows_per_record": int(args.max_windows_per_record) if args.physionet_ptt_dir else None,
-        "lightgbm_available": _HAS_LGB,
+        "physionet_source": physionet_source if args.physionet_ptt_dir else None,
         "optuna_available": _HAS_OPTUNA,
         # Target check
         "target_sbp_met": mae_sbp <= 5.0,
         "target_dbp_met": mae_dbp <= 5.0,
+        **loso_metrics,
     }
 
     # ------------------------------------------------------------------
@@ -654,8 +849,11 @@ def main() -> None:
             "medians_selected_schema": imputer.statistics_[feat_idx].tolist(),
             "training_config": {
                 "feature_mode": feature_mode,
+                "model_kind": model_kind,
+                "apply_bp_constraints": True,
                 "window_s": float(args.window_s),
                 "max_windows_per_record": int(args.max_windows_per_record) if args.physionet_ptt_dir else None,
+                "physionet_source": physionet_source if args.physionet_ptt_dir else None,
                 "live_target_fs": int(args.live_target_fs) if args.esp32_compatible else None,
                 "live_ppg_effective_fs": int(args.live_ppg_effective_fs) if args.esp32_compatible else None,
                 "meta_learner": args.meta_learner,

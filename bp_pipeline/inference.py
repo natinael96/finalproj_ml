@@ -13,6 +13,19 @@ from sklearn.isotonic import IsotonicRegression
 from .features import FeatureSchema
 
 
+def apply_bp_constraints(pred: np.ndarray) -> np.ndarray:
+    """Clip to plausible ranges and enforce DBP < SBP (minimum pulse pressure 15 mmHg)."""
+    out = np.asarray(pred, dtype=float).copy()
+    if out.ndim == 1:
+        out = out.reshape(1, -1)
+    sbp = np.clip(out[:, 0], 70.0, 220.0)
+    dbp = np.clip(out[:, 1], 40.0, 130.0)
+    dbp = np.minimum(dbp, sbp - 15.0)
+    out[:, 0] = sbp
+    out[:, 1] = dbp
+    return out
+
+
 class PerOutputIsotonicCalibrator:
     """Isotonic calibration per output (SBP / DBP)."""
 
@@ -59,6 +72,13 @@ class ArtifactBundle:
     imputer: Any = None
     full_schema: Optional[FeatureSchema] = None
     feat_idx: Optional[List[int]] = None
+    apply_constraints: bool = True
+
+    def _finalize_pred(self, pred_raw: np.ndarray) -> np.ndarray:
+        pred = self.calibrator.transform(pred_raw) if self.calibrator is not None else pred_raw
+        if self.apply_constraints:
+            pred = apply_bp_constraints(pred)
+        return pred
 
     def impute_features(self, x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=float).ravel()
@@ -81,7 +101,7 @@ class ArtifactBundle:
         if not np.all(np.isfinite(x)):
             raise ValueError("non-finite features after imputation")
         pred_raw = self.model.predict(x.reshape(1, -1))
-        pred = self.calibrator.transform(pred_raw) if self.calibrator is not None else pred_raw
+        pred = self._finalize_pred(pred_raw)
         return float(pred[0, 0]), float(pred[0, 1])
 
     def predict_batch(self, X: np.ndarray) -> np.ndarray:
@@ -93,9 +113,7 @@ class ArtifactBundle:
         if not np.all(np.isfinite(X_imp)):
             raise ValueError("non-finite features after imputation")
         pred_raw = self.model.predict(X_imp)
-        if self.calibrator is not None:
-            return self.calibrator.transform(pred_raw)
-        return pred_raw
+        return self._finalize_pred(pred_raw)
 
 
 def load_artifact_bundle(path: Path) -> ArtifactBundle:
@@ -132,6 +150,8 @@ def load_artifact_bundle(path: Path) -> ArtifactBundle:
     imputer = bundle.get("imputer")
     feat_idx = bundle.get("feat_idx")
     full_schema = FeatureSchema(**full_schema_dict) if full_names else None
+    training_config = bundle.get("training_config") or {}
+    apply_constraints = bool(training_config.get("apply_bp_constraints", True))
 
     return ArtifactBundle(
         model=model,
@@ -142,6 +162,7 @@ def load_artifact_bundle(path: Path) -> ArtifactBundle:
         imputer=imputer,
         full_schema=full_schema,
         feat_idx=list(feat_idx) if feat_idx is not None else None,
+        apply_constraints=apply_constraints,
     )
 
 
@@ -160,7 +181,7 @@ def predict_from_feature_dict(artifact_dir: str | Path, features: Dict[str, floa
         ).reshape(1, -1)
         row_sel = bundle.imputer.transform(row)[:, bundle.feat_idx]
         pred_raw = bundle.model.predict(row_sel)
-        pred = bundle.calibrator.transform(pred_raw) if bundle.calibrator is not None else pred_raw
+        pred = bundle._finalize_pred(pred_raw)
         return {"sbp": float(pred[0, 0]), "dbp": float(pred[0, 1])}
 
     names = bundle.schema_names or list(features.keys())

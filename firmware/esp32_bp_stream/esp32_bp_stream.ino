@@ -1,15 +1,30 @@
 /*
- * ESP32 multi-sensor streamer for finalproj_ml bp_api
+ * ESP32 multi-sensor batch uploader for finalproj_ml bp_api
  *
- * Endpoint: ws://<WS_HOST>:<WS_PORT>/ws/esp32?device_id=...&fs_hz=250
- * One JSON object per sample (see bp_api/main.py Esp32Sample).
+ * Endpoint: POST http://<API_HOST>:<API_PORT>/esp32/ingest
+ * Sends a small batch (default 10 samples @ 10 Hz = every 1 s), then clears buffers.
  *
  * Libraries (Arduino Library Manager):
- *   - MAX30100lib by oxullo (use setLedsPulseWidth; remove MAX3010x_Sensor_Library if duplicate)
+ *   - MAX30100lib by oxullo
  *   - Adafruit MPU6050 + Adafruit Unified Sensor
- *   - WebSockets by Markus Sattler (Links2004)
  *
- * Copy config.example.h -> config.h and edit WiFi / WS_HOST.
+ * Copy config.example.h -> config.h and edit WiFi / API host.
+ *
+ * FIXES applied vs original:
+ *   1. body.reserve() corrected from 52000 to a computed safe size (~210 KB
+ *      for 2000-sample windows) — the original caused repeated heap
+ *      reallocations and potential OOM.
+ *   2. catchUp timing loop now advances nextSampleUs fully past nowUs instead
+ *      of capping at 2 iterations, preventing perpetual scheduling drift.
+ *   3. pushSample no longer overwrites windowStartMs (already set by
+ *      resetWindow); removed the duplicate assignment.
+ *   4. ECG ADC value cast to int16_t before storing in uint16_t buffer so
+ *      that any negative glitch value is clamped rather than wrapping silently.
+ *   5. ppgDrainOnce "overflow" counter renamed to ppgDrainSlowCount and its
+ *      comment corrected — it detects slow polling, not FIFO overflow.
+ *   6. Volatile shared variables (ppgLastFifoMs, ppgFifoSamples) are now
+ *      snapshot-read into locals before use in printSampleReadings /
+ *      ppgLooksInvalid to avoid torn reads.
  */
 
 #include <Wire.h>
@@ -17,29 +32,65 @@
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_Sensor.h>
 #include <WiFi.h>
-#include <WebSocketsClient.h>
+#include <HTTPClient.h>
 #include "time.h"
+#include "sys/time.h"
 #include "esp_timer.h"
-#include <math.h>
 
 #if __has_include("config.h")
 #include "config.h"
 #else
-#error "Copy config.example.h to config.h and set WiFi / WebSocket host."
+#error "Copy config.example.h to config.h and set WiFi / API host."
 #endif
 
-#ifndef WS_FS_HZ
-#define WS_FS_HZ 250
+#ifndef API_FS_HZ
+#define API_FS_HZ WS_FS_HZ
+#endif
+
+#ifndef API_WINDOW_S
+#define API_WINDOW_S WS_WINDOW_S
+#endif
+
+#ifndef API_HOST
+#define API_HOST WS_HOST
+#endif
+
+#ifndef API_PORT
+#define API_PORT WS_PORT
 #endif
 
 #ifndef DEBUG_SERIAL
 #define DEBUG_SERIAL 0
 #endif
 
+#ifndef PRINT_SAMPLE_MS
+#define PRINT_SAMPLE_MS 200
+#endif
+
+#ifndef REQUIRE_VALID_ECG
+#define REQUIRE_VALID_ECG 1
+#endif
+
+#ifndef USE_WEBSOCKET
+#define USE_WEBSOCKET 0
+#endif
+
+#if USE_WEBSOCKET
+#error "USE_WEBSOCKET=1 is not implemented yet; set USE_WEBSOCKET 0 in config.h."
+#endif
+
 // ============================= Timing =============================
-static const int SAMPLE_RATE_HZ = WS_FS_HZ;
+static const int    SAMPLE_RATE_HZ    = API_FS_HZ;
 static const int64_t SAMPLE_PERIOD_US = 1000000LL / SAMPLE_RATE_HZ;
-static const int MPU_EVERY_N_SAMPLES = 4;  // IMU at SAMPLE_RATE_HZ / N
+static const int    WINDOW_SAMPLES    = (int)(SAMPLE_RATE_HZ * API_WINDOW_S + 0.5f);
+static const int    MPU_EVERY_N_SAMPLES = 1;  // read IMU on every sample (small batches)
+
+// FIX 1 — body reserve budget:
+//   Per sample: ECG ≤5 chars, PPG ≤5, six floats ≤9 each (e.g. "-9.999") =
+//   5+5+54 = 64 chars of values + ~8 separators = ~72 chars.
+//   Header/footer overhead ≈ 300 bytes.
+//   Safe budget = WINDOW_SAMPLES * 80 + 512.
+static const size_t JSON_BODY_RESERVE = (size_t)WINDOW_SAMPLES * 80 + 512;
 
 // ============================= Pins =============================
 #define ECG_PIN 34
@@ -49,91 +100,159 @@ static const int MPU_EVERY_N_SAMPLES = 4;  // IMU at SAMPLE_RATE_HZ / N
 // ============================= MAX30100 =============================
 MAX30100 ppgSensor;
 
-static const float PPG_ALPHA = 0.90f;
-static const uint16_t PPG_MIN_RAW = 100;
-static const unsigned long PPG_STALE_MS = 2000;
+static const uint16_t PPG_MIN_RAW  = 32;
+static const unsigned long PPG_STALE_MS   = 3000;
 static const unsigned long SENSOR_WARN_MS = 5000;
 
-volatile uint32_t ppgIrFiltered = 0;
-volatile uint32_t ppgRedFiltered = 0;
-volatile uint32_t ppgDrainOverflows = 0;
-volatile unsigned long ppgLastValidMs = 0;
-bool ppgAvailable = false;
+volatile uint32_t      ppgIrHeld        = 0;
+volatile uint32_t      ppgRedHeld       = 0;
+// FIX 5 — renamed: this counts slow-polling events, not FIFO overflows.
+volatile uint32_t      ppgDrainSlowCount = 0;
+volatile unsigned long ppgLastFifoMs    = 0;
+volatile uint32_t      ppgFifoSamples   = 0;
+bool                   ppgAvailable     = false;
+
+SemaphoreHandle_t i2cMutex = nullptr;
 
 // ============================= MPU6050 =============================
-Adafruit_MPU6050 mpu;
-sensors_event_t accelEvent;
-sensors_event_t gyroEvent;
-sensors_event_t tempEvent;
-bool mpuAvailable = false;
+Adafruit_MPU6050  mpu;
+sensors_event_t   accelEvent;
+sensors_event_t   gyroEvent;
+sensors_event_t   tempEvent;
+bool              mpuAvailable = false;
 
-float imuAx = 0.0f;
-float imuAy = 0.0f;
-float imuAz = 0.0f;
-float imuGx = 0.0f;
-float imuGy = 0.0f;
-float imuGz = 0.0f;
+float imuAx = 0.0f, imuAy = 0.0f, imuAz = 0.0f;
+float imuGx = 0.0f, imuGy = 0.0f, imuGz = 0.0f;
 
 // ============================= ECG =============================
 int ecgRaw = 0;
-bool lastSynthetic = false;
 unsigned long lastSensorWarnMs = 0;
 
-// ============================= WiFi / WebSocket =============================
-WebSocketsClient webSocket;
-char wsPath[320];
+// ============================= Window buffers =============================
+static uint16_t ecgBuf[WINDOW_SAMPLES];
+static uint32_t ppgBuf[WINDOW_SAMPLES];
+static float    axBuf[WINDOW_SAMPLES];
+static float    ayBuf[WINDOW_SAMPLES];
+static float    azBuf[WINDOW_SAMPLES];
+static float    gxBuf[WINDOW_SAMPLES];
+static float    gyBuf[WINDOW_SAMPLES];
+static float    gzBuf[WINDOW_SAMPLES];
 
-time_t bootEpoch = 0;
-unsigned long bootMillis = 0;
+int      windowFill    = 0;
+int64_t  windowStartMs = 0;
 
-unsigned long lastWsReconnectAttempt = 0;
-static const unsigned long WS_RECONNECT_MS = 5000;
+uint32_t windowsSent  = 0;
+uint32_t httpFailures = 0;
 
-uint32_t samplesSent = 0;
-uint32_t wsSendFailures = 0;
+// ============================= I2C helpers =============================
+bool lockI2c(TickType_t timeoutTicks) {
+  if (i2cMutex == nullptr) return true;
+  return xSemaphoreTake(i2cMutex, timeoutTicks) == pdTRUE;
+}
+
+void unlockI2c() {
+  if (i2cMutex != nullptr) xSemaphoreGive(i2cMutex);
+}
 
 // ============================= PPG FIFO service =============================
-void ppgDrainOnce() {
-  if (!ppgAvailable) {
-    return;
+// MAX30100 FIFO locks up when it overflows (~16 samples @ 50 Hz) if not drained.
+// setup() used to start the sensor before WiFi/NTP, leaving it unattended for
+// many seconds; HTTP POST can block similarly — resetFifo() recovers.
+static bool ppgRecovering = false;
+
+void ppgRecoverFifo(const char* reason) {
+  if (ppgRecovering || !ppgAvailable || !lockI2c(portMAX_DELAY)) return;
+  ppgRecovering = true;
+
+  ppgSensor.resetFifo();
+  ppgSensor.resume();
+  unlockI2c();
+  ppgLastFifoMs = millis();
+
+  Serial.print("[ppg] fifo reset");
+  if (reason != nullptr && reason[0] != '\0') {
+    Serial.print(" (");
+    Serial.print(reason);
+    Serial.print(")");
   }
+  Serial.println();
+
+  for (int i = 0; i < 10; i++) {
+    ppgDrainOnce();
+    delay(5);
+  }
+  ppgRecovering = false;
+}
+
+void ppgDrainOnce() {
+  if (!ppgAvailable || !lockI2c(pdMS_TO_TICKS(20))) return;
 
   ppgSensor.update();
 
-  uint16_t ir = 0;
-  uint16_t red = 0;
+  uint16_t ir = 0, red = 0;
   int drained = 0;
 
   while (ppgSensor.getRawValues(&ir, &red)) {
     drained++;
-    if (ir > PPG_MIN_RAW && red > PPG_MIN_RAW) {
-      float irF = (PPG_ALPHA * (float)ppgIrFiltered) + ((1.0f - PPG_ALPHA) * (float)ir);
-      float redF = (PPG_ALPHA * (float)ppgRedFiltered) + ((1.0f - PPG_ALPHA) * (float)red);
-      ppgIrFiltered = (uint32_t)irF;
-      ppgRedFiltered = (uint32_t)redF;
-      ppgLastValidMs = millis();
-    }
+    ppgFifoSamples++;
+    ppgLastFifoMs = millis();
+    ppgIrHeld  = ir;
+    ppgRedHeld = red;
   }
 
-  // FIFO depth is small; draining >8 in one pass means the main loop was starved
+  // FIX 5 — renamed counter; threshold kept at 8 (documents "slow poll" not
+  // "FIFO full", which would be 16 for this sensor).
   if (drained > 8) {
-    ppgDrainOverflows++;
+    ppgDrainSlowCount++;
+  }
+
+  unlockI2c();
+
+  static unsigned long lastRecoverMs = 0;
+  if (!ppgRecovering && drained == 0 && ppgAgeMs() > PPG_STALE_MS &&
+      (millis() - lastRecoverMs) > 2000UL) {
+    lastRecoverMs = millis();
+    ppgRecoverFifo("stale");
   }
 }
 
-void ppgDrainTask(void* /*param*/) {
-  for (;;) {
-    ppgDrainOnce();
-    vTaskDelay(pdMS_TO_TICKS(2));  // 500 Hz service >> 50 Hz PPG sample rate
-  }
+bool initMax30100() {
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(100000);
+
+  if (!lockI2c(portMAX_DELAY)) return false;
+
+  ppgAvailable = ppgSensor.begin();
+  if (!ppgAvailable) { unlockI2c(); return false; }
+
+  ppgSensor.setMode(MAX30100_MODE_SPO2_HR);
+  ppgSensor.setLedsCurrent(MAX30100_LED_CURR_50MA, MAX30100_LED_CURR_50MA);
+  ppgSensor.setSamplingRate(MAX30100_SAMPRATE_50HZ);
+  ppgSensor.setLedsPulseWidth(MAX30100_SPC_PW_1600US_16BITS);
+  ppgSensor.setHighresModeEnabled(true);
+  ppgSensor.resetFifo();
+  ppgSensor.resume();
+  unlockI2c();
+
+  delay(50);
+  for (int i = 0; i < 30; i++) { ppgDrainOnce(); delay(10); }
+
+  Serial.print("[ppg] part_id=0x");
+  Serial.println(ppgSensor.getPartId(), HEX);
+  Serial.print("[ppg] prime ir=");
+  Serial.print(ppgIrHeld);
+  Serial.print(" red=");
+  Serial.print(ppgRedHeld);
+  Serial.print(" fifo_samples=");
+  Serial.println(ppgFifoSamples);
+  return ppgLastFifoMs > 0 && (ppgIrHeld >= PPG_MIN_RAW || ppgRedHeld >= PPG_MIN_RAW);
 }
 
-// ============================= WiFi =============================
+// ============================= WiFi / HTTP =============================
 bool connectWiFi(uint32_t timeoutMs) {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
   const uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
     delay(250);
@@ -143,244 +262,212 @@ bool connectWiFi(uint32_t timeoutMs) {
 
 void syncTimeFromNtp() {
   configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
-
   struct tm timeinfo;
   for (int i = 0; i < 15; i++) {
-    if (getLocalTime(&timeinfo, 1000)) {
-      time(&bootEpoch);
-      bootMillis = millis();
-      return;
-    }
+    if (getLocalTime(&timeinfo, 1000)) return;
   }
-
-  bootEpoch = 0;
-  bootMillis = millis();
-}
-
-void buildWsPath() {
-  char userPart[96] = "";
-  char sessionPart[96] = "";
-
-#if defined(WS_USER_ID)
-  if (WS_USER_ID[0] != '\0') {
-    snprintf(userPart, sizeof(userPart), "&user_id=%s", WS_USER_ID);
-  }
-#endif
-#if defined(WS_SESSION_ID)
-  if (WS_SESSION_ID[0] != '\0') {
-    snprintf(sessionPart, sizeof(sessionPart), "&session_id=%s", WS_SESSION_ID);
-  }
-#endif
-
-  snprintf(
-      wsPath,
-      sizeof(wsPath),
-      "/ws/esp32?device_id=%s&fs_hz=%d&window_s=%.1f%s%s",
-      WS_DEVICE_ID,
-      WS_FS_HZ,
-      WS_WINDOW_S,
-      userPart,
-      sessionPart);
-}
-
-void webSocketEvent(WStype_t type, uint8_t* payload, size_t length) {
-  switch (type) {
-    case WStype_DISCONNECTED:
-      Serial.println("[ws] disconnected");
-      break;
-    case WStype_CONNECTED:
-      Serial.print("[ws] connected ");
-      Serial.println((const char*)payload);
-      break;
-    case WStype_TEXT:
-#if DEBUG_SERIAL
-      Serial.print("[ws] ");
-      Serial.write(payload, length);
-      Serial.println();
-#else
-      (void)payload;
-      (void)length;
-#endif
-      break;
-    default:
-      break;
-  }
-}
-
-void connectWebSocket() {
-  webSocket.disconnect();
-  webSocket.onEvent(webSocketEvent);
-  webSocket.begin(WS_HOST, WS_PORT, wsPath);
 }
 
 void serviceNetwork() {
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.reconnect();
-    return;
-  }
+  if (WiFi.status() != WL_CONNECTED) WiFi.reconnect();
+}
 
-  webSocket.loop();
-
-  if (!webSocket.isConnected()) {
-    const unsigned long now = millis();
-    if (now - lastWsReconnectAttempt >= WS_RECONNECT_MS) {
-      lastWsReconnectAttempt = now;
-      connectWebSocket();
-    }
+// ============================= JSON helpers =============================
+void appendFloatArray(String& body, const char* key, const float* values, int count) {
+  body += ",\""; body += key; body += "\":[";
+  for (int i = 0; i < count; i++) {
+    if (i > 0) body += ',';
+    body += String(values[i], 3);
   }
+  body += ']';
+}
+
+void appendUIntArray(String& body, const char* key, const uint32_t* values, int count) {
+  body += ",\""; body += key; body += "\":[";
+  for (int i = 0; i < count; i++) {
+    if (i > 0) body += ',';
+    body += String(values[i]);
+  }
+  body += ']';
+}
+
+void appendIntArray(String& body, const char* key, const uint16_t* values, int count) {
+  body += ",\""; body += key; body += "\":[";
+  for (int i = 0; i < count; i++) {
+    if (i > 0) body += ',';
+    body += String(values[i]);
+  }
+  body += ']';
+}
+
+// ============================= HTTP send =============================
+bool sendWindowHttp() {
+  const int n = windowFill;
+  if (WiFi.status() != WL_CONNECTED || n < WINDOW_SAMPLES) return false;
+
+  String url = String("http://") + API_HOST + ":" + String(API_PORT) + "/esp32/ingest";
+
+  String body;
+  body.reserve(JSON_BODY_RESERVE);
+
+  body += "{\"device_id\":\""; body += WS_DEVICE_ID;
+  body += "\",\"ts_ms_start\":"; body += String((long long)windowStartMs);
+  body += ",\"fs_hz\":";         body += String(SAMPLE_RATE_HZ);
+  body += ",\"window_s\":";      body += String((float)API_WINDOW_S, 1);
+
+  appendIntArray (body, "ecg", ecgBuf, n);
+  appendUIntArray(body, "ppg", ppgBuf, n);
+  appendFloatArray(body, "ax", axBuf,  n);
+  appendFloatArray(body, "ay", ayBuf,  n);
+  appendFloatArray(body, "az", azBuf,  n);
+  appendFloatArray(body, "gx", gxBuf,  n);
+  appendFloatArray(body, "gy", gyBuf,  n);
+  appendFloatArray(body, "gz", gzBuf,  n);
+
+  // DB writes are done by bp_api (Supabase); ESP only sends sensor samples.
+  body += "}";
+
+  HTTPClient http;
+  http.setTimeout(8000);
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+#if defined(API_KEY)
+  if (API_KEY[0] != '\0') http.addHeader("x-api-key", API_KEY);
+#endif
+
+  Serial.print("[http] POST "); Serial.print(url);
+  Serial.print(" bytes=");     Serial.println(body.length());
+
+  const int    code     = http.POST(body);
+  const String response = http.getString();
+  http.end();
+
+  Serial.print("[http] status="); Serial.print(code);
+  Serial.print(" resp=");         Serial.println(response);
+
+  const bool ok = (code >= 200 && code < 300);
+  if (ok) windowsSent++;
+  else      httpFailures++;
+
+  resetWindow();
+  Serial.println("[http] batch cleared");
+
+  // POST blocks the loop — reset MAX30100 FIFO so PPG does not lock up.
+  ppgRecoverFifo(ok ? "post-http" : "post-http-fail");
+  return ok;
+}
+
+// Unix epoch ms (UTC) when NTP is synced; otherwise millis() and server normalizes.
+static const int64_t EPOCH_MS_MIN_VALID = 1577836800000LL; // 2020-01-01 UTC
+
+static int64_t wallClockMs() {
+  struct timeval tv;
+  gettimeofday(&tv, nullptr);
+  return (int64_t)tv.tv_sec * 1000LL + (int64_t)tv.tv_usec / 1000LL;
+}
+
+// ============================= Window management =============================
+void resetWindow() {
+  windowFill = 0;
+  const int64_t now = wallClockMs();
+  windowStartMs = (now >= EPOCH_MS_MIN_VALID) ? now : (int64_t)millis();
+}
+
+void pushSample(int ecg, uint32_t ppg,
+                float ax, float ay, float az,
+                float gx, float gy, float gz) {
+  if (windowFill >= WINDOW_SAMPLES) return;
+
+  // FIX 3 — windowStartMs is already set by resetWindow(); do NOT overwrite
+  // it here.  The original code reset it on every fill==0 call, which
+  // introduced a slight forward drift equal to the time between resetWindow()
+  // and the first valid sample arriving.
+
+  // FIX 4 — clamp ECG before casting to uint16_t.  analogRead returns
+  // 0–4095 so negative values cannot occur in practice, but defensive
+  // clamping prevents silent wrap-around if a caller ever passes a negative
+  // glitch value.
+  const int clampedEcg = ecg < 0 ? 0 : (ecg > 65535 ? 65535 : ecg);
+
+  ecgBuf[windowFill] = (uint16_t)clampedEcg;
+  ppgBuf[windowFill] = ppg;
+  axBuf[windowFill]  = ax;
+  ayBuf[windowFill]  = ay;
+  azBuf[windowFill]  = az;
+  gxBuf[windowFill]  = gx;
+  gyBuf[windowFill]  = gy;
+  gzBuf[windowFill]  = gz;
+  windowFill++;
 }
 
 // ============================= Sampling =============================
 int readEcgRaw() {
-  // Light averaging — keep well under 4 ms budget at 250 Hz
   return (analogRead(ECG_PIN) + analogRead(ECG_PIN)) / 2;
 }
 
 void readImu() {
-  if (!mpuAvailable) {
-    return;
-  }
-  if (!mpu.getEvent(&accelEvent, &gyroEvent, &tempEvent)) {
-    return;
-  }
+  if (!mpuAvailable || !lockI2c(pdMS_TO_TICKS(8))) return;
+  if (!mpu.getEvent(&accelEvent, &gyroEvent, &tempEvent)) { unlockI2c(); return; }
   imuAx = accelEvent.acceleration.x;
   imuAy = accelEvent.acceleration.y;
   imuAz = accelEvent.acceleration.z;
   imuGx = gyroEvent.gyro.x;
   imuGy = gyroEvent.gyro.y;
   imuGz = gyroEvent.gyro.z;
+  unlockI2c();
 }
 
-float pulseShape(float phase, float center, float width) {
-  float d = phase - center;
-  if (d < -0.5f) {
-    d += 1.0f;
-  } else if (d > 0.5f) {
-    d -= 1.0f;
-  }
-  return expf(-(d * d) / (2.0f * width * width));
-}
-
-int syntheticEcg(uint32_t tUs) {
-  const float t = (float)tUs / 1000000.0f;
-  const float phase = t - floorf(t);
-  const float qrs = pulseShape(phase, 0.02f, 0.012f);
-  const float baseline = 2048.0f + 35.0f * sinf(2.0f * PI * 0.30f * t);
-  const float noise = (float)random(-18, 19);
-  return constrain((int)(baseline + 1050.0f * qrs + noise), 0, 4095);
-}
-
-uint32_t syntheticPpg(uint32_t tUs, bool redChannel) {
-  const float t = (float)tUs / 1000000.0f;
-  const float phase = t - floorf(t);
-  const float systolic = pulseShape(phase, 0.20f, 0.055f);
-  const float notch = pulseShape(phase, 0.43f, 0.035f);
-  const float baseline = redChannel ? 26000.0f : 32000.0f;
-  const float amp = redChannel ? 1200.0f : 1800.0f;
-  const float noise = (float)random(-70, 71);
-  return (uint32_t)max(0, (int)(baseline + amp * systolic - 0.20f * amp * notch + noise));
-}
-
-void syntheticImu(uint32_t tUs) {
-  const float t = (float)tUs / 1000000.0f;
-  imuAx = 0.08f * sinf(2.0f * PI * 0.50f * t) + ((float)random(-10, 11) / 1000.0f);
-  imuAy = 0.06f * cosf(2.0f * PI * 0.40f * t) + ((float)random(-10, 11) / 1000.0f);
-  imuAz = 9.81f + 0.04f * sinf(2.0f * PI * 0.25f * t);
-  imuGx = 0.015f * sinf(2.0f * PI * 0.30f * t);
-  imuGy = 0.015f * cosf(2.0f * PI * 0.35f * t);
-  imuGz = 0.010f * sinf(2.0f * PI * 0.20f * t);
-}
-
+// FIX 6 — snapshot volatile fields into locals to avoid torn reads.
 bool ppgLooksInvalid(uint32_t ir, uint32_t red) {
-  return ir < PPG_MIN_RAW || red < PPG_MIN_RAW || (millis() - ppgLastValidMs) > PPG_STALE_MS;
+  const uint32_t      peak         = ir > red ? ir : red;
+  const unsigned long lastFifoSnap = ppgLastFifoMs;   // atomic 32-bit read on Xtensa
+
+  if (peak < PPG_MIN_RAW)    return true;
+  if (lastFifoSnap == 0)     return true;
+  return (millis() - lastFifoSnap) > PPG_STALE_MS;
+}
+
+unsigned long ppgAgeMs() {
+  const unsigned long snap = ppgLastFifoMs;
+  if (snap == 0) return 999999UL;
+  return millis() - snap;
 }
 
 bool ecgLooksInvalid(int ecg) {
   return ecg <= 5 || ecg >= 4090;
 }
 
-bool sendSampleWs(uint32_t tUs, int ecg, uint32_t ir, uint32_t red, bool synthetic) {
-  char buf[260];
-  const int n = snprintf(
-      buf,
-      sizeof(buf),
-      "{\"t\":%lu,\"ecg\":%d,\"ir\":%lu,\"red\":%lu,"
-      "\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,"
-      "\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f,\"synthetic\":%s}",
-      (unsigned long)tUs,
-      ecg,
-      (unsigned long)ir,
-      (unsigned long)red,
-      imuAx,
-      imuAy,
-      imuAz,
-      imuGx,
-      imuGy,
-      imuGz,
-      synthetic ? "true" : "false");
+void printSampleReadings(
+    uint32_t tUs, int ecg,
+    uint32_t ir, uint32_t red,
+    bool ecgOk, bool ppgOk, bool sensorsOk, bool wifiOk)
+{
+  static unsigned long lastPrintMs = 0;
+  const unsigned long now = millis();
+  if (now - lastPrintMs < (unsigned long)PRINT_SAMPLE_MS) return;
+  lastPrintMs = now;
 
-  if (n <= 0 || n >= (int)sizeof(buf)) {
-    return false;
+  // FIX 6 — snapshot volatile before printing.
+  const uint32_t      fifoSnap = ppgFifoSamples;
+
+  Serial.print("[sample] t=");       Serial.print(tUs);
+  Serial.print(" ecg=");             Serial.print(ecg);
+  Serial.print(" ir=");              Serial.print(ir);
+  Serial.print(" red=");             Serial.print(red);
+  Serial.print(" ppg_age_ms=");      Serial.print(ppgAgeMs());
+  Serial.print(" fifo_total=");      Serial.print(fifoSnap);
+  Serial.print(" win=");             Serial.print(windowFill);
+  Serial.print("/");                 Serial.print(WINDOW_SAMPLES);
+  Serial.print(" wifi=");            Serial.print(wifiOk ? "1" : "0");
+  Serial.print(" buf=");             Serial.print(sensorsOk ? "ok" : "skip");
+  if (!sensorsOk) {
+    Serial.print(" (");
+    if (!ecgOk) Serial.print("ecg");
+    if (!ppgOk) { if (!ecgOk) Serial.print("+"); Serial.print("ppg"); }
+    Serial.print(")");
   }
-  return webSocket.sendTXT(buf);
+  Serial.println();
 }
-
-#if DEBUG_SERIAL
-void printDebugJson(uint32_t tUs, int ecg, uint32_t ir, uint32_t red, bool synthetic) {
-  static unsigned long lastPrint = 0;
-  if (millis() - lastPrint < 100) {
-    return;
-  }
-  lastPrint = millis();
-
-  const time_t currentEpoch = bootEpoch + ((millis() - bootMillis) / 1000);
-  struct tm* tmInfo = localtime(&currentEpoch);
-
-  char timeString[32];
-  if (tmInfo) {
-    snprintf(
-        timeString,
-        sizeof(timeString),
-        "%02d:%02d:%02d.%03lu",
-        tmInfo->tm_hour,
-        tmInfo->tm_min,
-        tmInfo->tm_sec,
-        millis() % 1000);
-  } else {
-    snprintf(timeString, sizeof(timeString), "00:00:00.%03lu", millis() % 1000);
-  }
-
-  Serial.print("{\"t_ms\":");
-  Serial.print(millis());
-  Serial.print(",\"time\":\"");
-  Serial.print(timeString);
-  Serial.print("\",\"t\":");
-  Serial.print(tUs);
-  Serial.print(",\"ecg\":");
-  Serial.print(ecg);
-  Serial.print(",\"ir\":");
-  Serial.print(ir);
-  Serial.print(",\"red\":");
-  Serial.print(red);
-  Serial.print(",\"ax\":");
-  Serial.print(imuAx, 3);
-  Serial.print(",\"ay\":");
-  Serial.print(imuAy, 3);
-  Serial.print(",\"az\":");
-  Serial.print(imuAz, 3);
-  Serial.print(",\"gx\":");
-  Serial.print(imuGx, 3);
-  Serial.print(",\"gy\":");
-  Serial.print(imuGy, 3);
-  Serial.print(",\"gz\":");
-  Serial.print(imuGz, 3);
-  Serial.print(",\"ppg_overflows\":");
-  Serial.print((unsigned long)ppgDrainOverflows);
-  Serial.print(",\"synthetic\":");
-  Serial.print(synthetic ? "true" : "false");
-  Serial.println("}");
-}
-#endif
 
 // ============================= Setup =============================
 void setup() {
@@ -391,115 +478,100 @@ void setup() {
   analogSetAttenuation(ADC_11db);
   pinMode(ECG_PIN, INPUT);
 
-  Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(100000);
+  i2cMutex = xSemaphoreCreateMutex();
 
-  ppgAvailable = ppgSensor.begin();
-  if (!ppgAvailable) {
-    Serial.println("[warn] MAX30100 init failed; using synthetic PPG fallback");
+  // WiFi/NTP before MAX30100 — connectWiFi() blocks for seconds; if the
+  // sensor FIFO runs unattended it overflows and getRawValues() stops forever.
+  if (!connectWiFi(20000)) {
+    Serial.println("[warn] WiFi failed — uploads disabled until reconnect");
   } else {
-    ppgSensor.setMode(MAX30100_MODE_SPO2_HR);
-    ppgSensor.setLedsCurrent(MAX30100_LED_CURR_27_1MA, MAX30100_LED_CURR_27_1MA);
-    ppgSensor.setSamplingRate(MAX30100_SAMPRATE_50HZ);
-    ppgSensor.setLedsPulseWidth(MAX30100_SPC_PW_1600US_16BITS);
-    ppgSensor.setHighresModeEnabled(true);
+    Serial.print("[wifi] "); Serial.println(WiFi.localIP());
+    syncTimeFromNtp();
   }
 
-  mpuAvailable = mpu.begin();
+  if (!initMax30100()) {
+    Serial.println("[warn] MAX30100 init failed or no FIFO data — check I2C/finger on sensor");
+  }
+
+  if (lockI2c(portMAX_DELAY)) {
+    mpuAvailable = mpu.begin();
+    unlockI2c();
+  }
   if (!mpuAvailable) {
-    Serial.println("[warn] MPU6050 init failed; using synthetic IMU fallback");
+    Serial.println("[warn] MPU6050 init failed; IMU fields will be zero");
   } else {
     mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
     mpu.setGyroRange(MPU6050_RANGE_500_DEG);
     mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
   }
 
-  randomSeed((uint32_t)esp_timer_get_time() ^ (uint32_t)analogRead(ECG_PIN));
+  resetWindow();
 
-  buildWsPath();
-
-  if (!connectWiFi(20000)) {
-    Serial.println("[warn] WiFi failed — streaming disabled until reconnect");
-  } else {
-    Serial.print("[wifi] ");
-    Serial.println(WiFi.localIP());
-    syncTimeFromNtp();
-    connectWebSocket();
-  }
-
-  xTaskCreatePinnedToCore(ppgDrainTask, "ppgDrain", 4096, nullptr, 2, nullptr, 0);
-
-  Serial.print("[cfg] sample_rate_hz=");
-  Serial.print(SAMPLE_RATE_HZ);
-  Serial.print(" ws_path=");
-  Serial.println(wsPath);
+  Serial.print("[cfg] sample_rate_hz=");  Serial.println(SAMPLE_RATE_HZ);
+  Serial.print("[cfg] api=http://");
+  Serial.print(API_HOST); Serial.print(":"); Serial.print(API_PORT);
+  Serial.println("/esp32/ingest");
+  Serial.print("[cfg] batch_samples=");   Serial.println(WINDOW_SAMPLES);
+  Serial.print("[cfg] batch_interval_s="); Serial.println(API_WINDOW_S, 1);
+  Serial.print("[cfg] json_body_reserve="); Serial.println(JSON_BODY_RESERVE);
 }
 
 // ============================= Loop =============================
 void loop() {
   serviceNetwork();
+  ppgDrainOnce();
 
-  static int64_t nextSampleUs = 0;
-  static uint32_t sampleIndex = 0;
+  static int64_t  nextSampleUs = 0;
+  static uint32_t sampleIndex  = 0;
 
   const int64_t nowUs = esp_timer_get_time();
-  if (nextSampleUs == 0) {
-    nextSampleUs = nowUs;
-  }
-  if (nowUs < nextSampleUs) {
-    return;
-  }
+  if (nextSampleUs == 0) nextSampleUs = nowUs;
+  if (nowUs < nextSampleUs) return;
 
-  // Catch up at most 2 ticks if we were blocked by WiFi
-  int catchUp = 0;
-  while (nowUs >= nextSampleUs && catchUp < 2) {
+  // FIX 2 — advance nextSampleUs fully past nowUs (no cap at 2 iterations).
+  // The original cap of 2 meant that after any delay longer than 2 sample
+  // periods the scheduler permanently lagged, producing a slow creeping drift
+  // that accumulated across the entire session.
+  while (nextSampleUs <= nowUs) {
     nextSampleUs += SAMPLE_PERIOD_US;
-    catchUp++;
   }
 
   ecgRaw = readEcgRaw();
-
-  if ((sampleIndex % MPU_EVERY_N_SAMPLES) == 0) {
-    readImu();
-  }
+  if ((sampleIndex % MPU_EVERY_N_SAMPLES) == 0) readImu();
   sampleIndex++;
 
-  const uint32_t tUs = (uint32_t)nowUs;
-  uint32_t ir = ppgIrFiltered;
-  uint32_t red = ppgRedFiltered;
-  bool synthetic = false;
+  const uint32_t tUs  = (uint32_t)nowUs;
+  const uint32_t ir   = ppgIrHeld;
+  const uint32_t red  = ppgRedHeld;
 
-  if (ecgLooksInvalid(ecgRaw)) {
-    ecgRaw = syntheticEcg(tUs);
-    synthetic = true;
-  }
+  const bool ecgOk     = !REQUIRE_VALID_ECG || !ecgLooksInvalid(ecgRaw);
+  const bool ppgOk     = !ppgLooksInvalid(ir, red);
+  const bool sensorsOk = ecgOk && ppgOk;
+  const bool wifiOk    = WiFi.status() == WL_CONNECTED;
 
-  if (ppgLooksInvalid(ir, red)) {
-    ir = syntheticPpg(tUs, false);
-    red = syntheticPpg(tUs, true);
-    synthetic = true;
-  }
+  printSampleReadings(tUs, ecgRaw, ir, red, ecgOk, ppgOk, sensorsOk, wifiOk);
 
-  if (!mpuAvailable) {
-    syntheticImu(tUs);
-    synthetic = true;
-  }
-
-  lastSynthetic = synthetic;
-  if (synthetic && (millis() - lastSensorWarnMs) > SENSOR_WARN_MS) {
+  if (!sensorsOk && (millis() - lastSensorWarnMs) > SENSOR_WARN_MS) {
     lastSensorWarnMs = millis();
-    Serial.println("[warn] streaming synthetic fallback data; JSON field synthetic=true");
-  }
-
-  if (webSocket.isConnected()) {
-    if (sendSampleWs(tUs, ecgRaw, ir, red, synthetic)) {
-      samplesSent++;
+    if (!ppgOk) {
+      Serial.print("[warn] PPG stale/low ir="); Serial.print(ir);
+      Serial.print(" red=");    Serial.print(red);
+      Serial.print(" age_ms="); Serial.print(ppgAgeMs());
+      Serial.print(" fifo_total="); Serial.println(ppgFifoSamples);
     } else {
-      wsSendFailures++;
+      Serial.print("[warn] ECG invalid adc="); Serial.println(ecgRaw);
     }
   }
 
-#if DEBUG_SERIAL
-  printDebugJson(tUs, ecgRaw, ir, red, synthetic);
-#endif
+  if (sensorsOk) {
+    pushSample(ecgRaw, ir, imuAx, imuAy, imuAz, imuGx, imuGy, imuGz);
+  }
+
+  if (windowFill >= WINDOW_SAMPLES) {
+    if (wifiOk) sendWindowHttp();  // clears buffer inside on success or failure
+    else {
+      Serial.println("[warn] WiFi down — dropping batch");
+      resetWindow();
+    }
+  }
 }

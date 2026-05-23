@@ -62,10 +62,37 @@ create index if not exists telemetry_windows_device_time_idx
 create index if not exists telemetry_windows_session_time_idx
   on public.telemetry_windows(session_id, created_at desc);
 
+-- Raw ESP32 batches (every HTTP POST); see esp32_raw_batches.sql for RLS policies
+create table if not exists public.esp32_raw_batches (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  session_id uuid references public.sessions(id) on delete set null,
+  device_id text not null,
+  ts_ms_start bigint not null,
+  fs_hz int not null,
+  window_s real not null,
+  sample_count int not null check (sample_count > 0),
+  ecg jsonb not null,
+  ppg jsonb not null,
+  ax jsonb,
+  ay jsonb,
+  az jsonb,
+  gx jsonb,
+  gy jsonb,
+  gz jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists esp32_raw_batches_user_time_idx
+  on public.esp32_raw_batches(user_id, created_at desc);
+create index if not exists esp32_raw_batches_device_time_idx
+  on public.esp32_raw_batches(device_id, created_at desc);
+
 -- RLS
 alter table public.devices enable row level security;
 alter table public.sessions enable row level security;
 alter table public.telemetry_windows enable row level security;
+alter table public.esp32_raw_batches enable row level security;
 
 -- Devices
 drop policy if exists "devices_select_own" on public.devices;
@@ -132,4 +159,20 @@ drop policy if exists "telemetry_windows_delete_own" on public.telemetry_windows
 create policy "telemetry_windows_delete_own"
   on public.telemetry_windows for delete
   using (auth.uid() = user_id);
+
+-- ESP32 raw batches
+drop policy if exists "esp32_raw_batches_select_own" on public.esp32_raw_batches;
+create policy "esp32_raw_batches_select_own"
+  on public.esp32_raw_batches for select
+  using (user_id is not null and auth.uid() = user_id);
+
+drop policy if exists "esp32_raw_batches_insert_own" on public.esp32_raw_batches;
+create policy "esp32_raw_batches_insert_own"
+  on public.esp32_raw_batches for insert
+  with check (user_id is not null and auth.uid() = user_id);
+
+drop policy if exists "esp32_raw_batches_delete_own" on public.esp32_raw_batches;
+create policy "esp32_raw_batches_delete_own"
+  on public.esp32_raw_batches for delete
+  using (user_id is not null and auth.uid() = user_id);
 

@@ -117,6 +117,80 @@ def _bp_label_from_info_row(row: pd.Series) -> Tuple[float, float]:
     return sbp, dbp
 
 
+def _find_csv_dir(root: Path) -> Optional[Path]:
+    """Return `<root>/CSV` or `<root>/csv`, whichever exists."""
+    for name in ("CSV", "csv"):
+        p = root / name
+        if p.is_dir():
+            return p
+    return None
+
+
+def _csv_path_for_record(csv_dir: Path, rec_name: str) -> Optional[Path]:
+    fp = csv_dir / f"{rec_name}.csv"
+    return fp if fp.is_file() else None
+
+
+def _wfdb_record_ready(root: Path, rec_name: str) -> bool:
+    return (
+        (root / f"{rec_name}.hea").is_file()
+        and (root / f"{rec_name}.dat").is_file()
+        and (root / f"{rec_name}.atr").is_file()
+    )
+
+
+def _append_feature_windows(
+    *,
+    win_iter: Iterator[Dict[str, float]],
+    rec_name: str,
+    sbp: float,
+    dbp: float,
+    live_compatible: bool,
+    feature_names: Optional[List[str]],
+    X_rows: List[List[float]],
+    y_rows: List[List[float]],
+    rec_names: List[str],
+) -> Tuple[Optional[List[str]], int]:
+    n_win = 0
+    for wi, feats in enumerate(win_iter):
+        if feature_names is None:
+            feature_names = list(DEFAULT_FEATURES.names if live_compatible else feats.keys())
+        x = [float(feats[k]) for k in feature_names]
+        X_rows.append(x)
+        y_rows.append([sbp, dbp])
+        rec_names.append(f"{rec_name}#w{wi}")
+        n_win += 1
+    return feature_names, n_win
+
+
+def _load_wfdb_record_windows(
+    root: Path,
+    rec_name: str,
+    *,
+    cfg: PhysioNetPttConfig,
+    live_compatible: bool,
+    verbose: bool,
+) -> Optional[Tuple["wfdb.Record", Iterator[Dict[str, float]]]]:
+    try:
+        record = wfdb.rdrecord(str(root / rec_name))
+        ann = wfdb.rdann(str(root / rec_name), "atr")
+    except Exception as e:
+        if verbose:
+            print(f"[physionet-ptt] skip(read error): {rec_name} ({e})")
+        return None
+    try:
+        win_iter = (
+            extract_live_compatible_windowed_features_from_wfdb(record, ann, cfg=cfg)
+            if live_compatible
+            else extract_windowed_features_from_wfdb(record, ann, cfg=cfg)
+        )
+    except Exception as e:
+        if verbose:
+            print(f"[physionet-ptt] skip(feature error): {rec_name} ({e})")
+        return None
+    return record, win_iter
+
+
 def _iter_csv_records(csv_dir: Path) -> Iterator[Tuple[str, Path]]:
     # records are in CSV/ folder, one file per activity
     for fp in sorted(csv_dir.glob("*.csv")):
@@ -628,18 +702,24 @@ def load_physionet_ptt_features(
     cfg: PhysioNetPttConfig,
     verbose: bool = False,
     live_compatible: bool = False,
+    source: str = "auto",
 ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
     """
     Loads the PhysioNet pulse-transit-time-ppg dataset and returns (X, y, feature_names, record_names).
 
-    Supports:
-      - CSV if `<root>/CSV/` exists
-      - WFDB from record files in `<root>/` (uses `.hea/.dat` + `.atr`)
+    source:
+      - "auto" (default): CSV when `{rec}.csv` exists, else WFDB when `.hea/.dat/.atr` exist
+      - "csv": CSV exports only (`<root>/csv/` or `<root>/CSV/`)
+      - "wfdb": WFDB records only (`.hea`, `.dat`, `.atr` in dataset root)
 
     If live_compatible=True, features are extracted with the same generic
     DEFAULT_FEATURES code path used by the ESP32 live API.
     """
     root = Path(dataset_root)
+    source = str(source).lower().strip()
+    if source not in {"auto", "csv", "wfdb"}:
+        raise ValueError(f"source must be auto, csv, or wfdb (got {source!r})")
+
     try:
         info = _load_subjects_info(root)
     except FileNotFoundError:
@@ -653,69 +733,78 @@ def load_physionet_ptt_features(
 
     feature_names: Optional[List[str]] = None
 
-    csv_dir = root / "CSV"
-    if csv_dir.exists():
-        for rec_name, fp in _iter_csv_records(csv_dir):
-            if rec_name not in info.index:
-                if verbose:
-                    print(f"[physionet-ptt] skip(no subjects_info row): {rec_name}")
-                continue
+    csv_dir = _find_csv_dir(root) if source != "wfdb" else None
+    record_names = sorted(str(name) for name in info.index)
 
-            df = pd.read_csv(fp)
-            sbp, dbp = _bp_label_from_info_row(info.loc[rec_name])
+    for rec_name in record_names:
+        sbp, dbp = _bp_label_from_info_row(info.loc[rec_name])
+        csv_fp = _csv_path_for_record(csv_dir, rec_name) if csv_dir is not None else None
+        wfdb_ready = _wfdb_record_ready(root, rec_name)
 
-            # Per dataset description: ECG/PPG/IMU channels are 500 Hz in the CSV export.
+        use_csv = source == "csv" or (source == "auto" and csv_fp is not None)
+        use_wfdb = source == "wfdb" or (source == "auto" and csv_fp is None and wfdb_ready)
+
+        if source == "csv" and csv_fp is None:
+            if verbose:
+                print(f"[physionet-ptt] skip(no csv): {rec_name}")
+            continue
+        if source == "wfdb" and not wfdb_ready:
+            if verbose:
+                print(f"[physionet-ptt] skip(no wfdb): {rec_name}")
+            continue
+
+        if use_csv and csv_fp is not None:
+            df = pd.read_csv(csv_fp)
             extractor = (
                 extract_live_compatible_windowed_features_from_csv
                 if live_compatible
                 else extract_windowed_features_from_csv
             )
-            for wi, feats in enumerate(extractor(df, fs=500, cfg=cfg)):
-                if feature_names is None:
-                    feature_names = list(DEFAULT_FEATURES.names if live_compatible else feats.keys())
-                x = [float(feats[k]) for k in feature_names]
-                X_rows.append(x)
-                y_rows.append([sbp, dbp])
-                rec_names.append(f"{rec_name}#w{wi}")
+            feature_names, n_win = _append_feature_windows(
+                win_iter=extractor(df, fs=500, cfg=cfg),
+                rec_name=rec_name,
+                sbp=sbp,
+                dbp=dbp,
+                live_compatible=live_compatible,
+                feature_names=feature_names,
+                X_rows=X_rows,
+                y_rows=y_rows,
+                rec_names=rec_names,
+            )
             if verbose:
-                print(f"[physionet-ptt][csv] {rec_name}: SBP={sbp:.1f} DBP={dbp:.1f}")
-    else:
-        for rec_name in _iter_wfdb_records(root):
-            if rec_name not in info.index:
-                if verbose:
-                    print(f"[physionet-ptt] skip(no subjects_info row): {rec_name}")
-                continue
+                print(f"[physionet-ptt][csv] {rec_name}: windows={n_win} SBP={sbp:.1f} DBP={dbp:.1f}")
+            continue
 
-            try:
-                record = wfdb.rdrecord(str(root / rec_name))
-                ann = wfdb.rdann(str(root / rec_name), "atr")
-            except Exception as e:
-                if verbose:
-                    print(f"[physionet-ptt] skip(read error): {rec_name} ({e})")
-                continue
-
-            sbp, dbp = _bp_label_from_info_row(info.loc[rec_name])
-            try:
-                win_iter = (
-                    extract_live_compatible_windowed_features_from_wfdb(record, ann, cfg=cfg)
-                    if live_compatible
-                    else extract_windowed_features_from_wfdb(record, ann, cfg=cfg)
+        if use_wfdb and wfdb_ready:
+            loaded_wfdb = _load_wfdb_record_windows(
+                root,
+                rec_name,
+                cfg=cfg,
+                live_compatible=live_compatible,
+                verbose=verbose,
+            )
+            if loaded_wfdb is not None:
+                record, win_iter = loaded_wfdb
+                feature_names, n_win = _append_feature_windows(
+                    win_iter=win_iter,
+                    rec_name=rec_name,
+                    sbp=sbp,
+                    dbp=dbp,
+                    live_compatible=live_compatible,
+                    feature_names=feature_names,
+                    X_rows=X_rows,
+                    y_rows=y_rows,
+                    rec_names=rec_names,
                 )
-            except Exception as e:
                 if verbose:
-                    print(f"[physionet-ptt] skip(feature error): {rec_name} ({e})")
-                continue
-            n_win = 0
-            for wi, feats in enumerate(win_iter):
-                if feature_names is None:
-                    feature_names = list(DEFAULT_FEATURES.names if live_compatible else feats.keys())
-                x = [float(feats[k]) for k in feature_names]
-                X_rows.append(x)
-                y_rows.append([sbp, dbp])
-                rec_names.append(f"{rec_name}#w{wi}")
-                n_win += 1
-            if verbose:
-                print(f"[physionet-ptt][wfdb] {rec_name}: fs={record.fs} windows={n_win} SBP={sbp:.1f} DBP={dbp:.1f}")
+                    print(
+                        f"[physionet-ptt][wfdb] {rec_name}: fs={record.fs} windows={n_win} "
+                        f"SBP={sbp:.1f} DBP={dbp:.1f}"
+                    )
+            continue
+
+        if verbose and source == "auto":
+            print(f"[physionet-ptt] skip(no csv/wfdb): {rec_name}")
 
     if not X_rows or feature_names is None:
         raise ValueError("No PhysioNet PTT features extracted. Check dataset path and files.")

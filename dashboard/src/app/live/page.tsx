@@ -9,6 +9,7 @@ import { TrendChart } from "@/components/TrendChart";
 import { classifyBp, summarizeTelemetry } from "@/lib/bp";
 import { formatInteger, formatShortTime } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
+import { isWebSocketEnabled } from "@/lib/env";
 import { useTelemetry } from "@/lib/telemetry";
 import { computeTrendStats } from "@/lib/trends";
 import type { DashboardMode } from "@/lib/types";
@@ -33,7 +34,13 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
   const { t } = useI18n();
   const [mode, setMode] = useState<DashboardMode>("user");
   const [threshold, setThreshold] = useState(140);
-  const { rows, status, telemetryStatus } = useTelemetry({ enabled: true, limit: 80, realtime: true, websocket: true });
+  const wsEnabled = isWebSocketEnabled();
+  const { rows, status, telemetryStatus } = useTelemetry({
+    enabled: true,
+    limit: 80,
+    realtime: true,
+    websocket: wsEnabled
+  });
   const visibleRows = mode === "user" ? rows.slice(0, 20) : rows;
   const summary = useMemo(() => summarizeTelemetry(rows, threshold), [rows, threshold]);
   const trendStats = useMemo(() => computeTrendStats(rows, threshold), [rows, threshold]);
@@ -47,7 +54,7 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
     elevatedDetail: t("bp.elevatedDetail"),
     inRangeDetail: t("bp.inRangeDetail")
   });
-  const liveTone = summary.count > 0 ? "good" : toneForConnection(telemetryStatus.websocket);
+  const liveTone = summary.count > 0 ? "good" : toneForConnection(wsEnabled ? telemetryStatus.websocket : telemetryStatus.realtime);
   const liveLabel = summary.count > 0 ? t("live.receiving") : telemetryStatus.message;
 
   return (
@@ -123,7 +130,12 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
       <div className="threeCol">
         <KpiTile label={t("live.dbLoad")} value={telemetryStatus.database} meta={t("live.dbMeta")} tone={toneForConnection(telemetryStatus.database)} />
         <KpiTile label={t("live.realtime")} value={telemetryStatus.realtime} meta={t("live.realtimeMeta")} tone={toneForConnection(telemetryStatus.realtime)} />
-        <KpiTile label={t("live.fastApiSocket")} value={telemetryStatus.websocket} meta={t("live.socketMeta")} tone={toneForConnection(telemetryStatus.websocket)} />
+        <KpiTile
+          label={t("live.fastApiSocket")}
+          value={wsEnabled ? telemetryStatus.websocket : "disabled"}
+          meta={wsEnabled ? t("live.socketMeta") : "Set NEXT_PUBLIC_BP_WEBSOCKET_ENABLED=true"}
+          tone={wsEnabled ? toneForConnection(telemetryStatus.websocket) : "neutral"}
+        />
       </div>
 
       <Card>
