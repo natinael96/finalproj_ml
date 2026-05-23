@@ -13,6 +13,17 @@ export type SeriesData = {
 
 type CrosshairPos = { svgX: number; sampleIdx: number };
 
+// ─── time helpers ────────────────────────────────────────────────────────────
+
+/** Format an epoch-ms value as HH:MM:SS in GMT+3 (Africa/Nairobi, no DST). */
+function fmtGmt3(ms: number): string {
+  return new Date(ms).toLocaleTimeString("en-GB", {
+    timeZone: "Africa/Nairobi",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  });
+}
+
 // ─── maths helpers ───────────────────────────────────────────────────────────
 
 function arrMin(a: number[], s: number, e: number) {
@@ -152,13 +163,14 @@ function useViewState(totalSamples: number) {
 
 function CrosshairOverlay({
   pos, allSeries, fs, unit,
-  minV, maxV, height,
+  minV, maxV, height, startMs,
 }: {
   pos: CrosshairPos;
   allSeries: SeriesData[];
   fs: number; unit: string;
   minV: number; maxV: number;
   height: number;
+  startMs?: number;
 }) {
   const yT = PAD_Y;
   const yB = height - PAD_Y;
@@ -172,9 +184,12 @@ function CrosshairOverlay({
 
   // Build tooltip lines
   const tSec = (pos.sampleIdx / Math.max(fs, 1)).toFixed(3);
+  const tLabel = startMs != null
+    ? fmtGmt3(startMs + (pos.sampleIdx / Math.max(fs, 1)) * 1000) + " (GMT+3)"
+    : `t = ${tSec} s`;
   const multi = allSeries.length > 1;
   const lines: { text: string; color: string }[] = [
-    { text: `t = ${tSec} s`, color: "oklch(72% 0.03 252)" },
+    { text: tLabel, color: "oklch(72% 0.03 252)" },
     ...allSeries.map((s, i) => ({
       text: `${multi ? s.label + ": " : ""}${vals[i] != null ? fmt(vals[i]!) : "—"} ${unit}`,
       color: s.color,
@@ -236,9 +251,10 @@ interface ChartCoreProps {
   svgRef: React.RefObject<SVGSVGElement>;
   handlers: Record<string, (e: never) => void>;
   crosshair?: CrosshairPos | null;
+  startMs?: number;
 }
 
-function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHint, svgRef, handlers, crosshair }: ChartCoreProps) {
+function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHint, svgRef, handlers, crosshair, startMs }: ChartCoreProps) {
   const multi = allSeries.length > 1;
 
   const decimated = allSeries.map((s) => {
@@ -289,8 +305,12 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
           transform={`rotate(-90,10,${height / 2})`}>{unit}</text>
 
         {/* x labels */}
-        <text x={PAD_X} y={height + 16} className="axisLabel">{tS.toFixed(2)} s</text>
-        <text x={SVG_W - 2} y={height + 16} className="axisLabel" textAnchor="end">{tE.toFixed(2)} s</text>
+        <text x={PAD_X} y={height + 16} className="axisLabel">
+          {startMs != null ? fmtGmt3(startMs + tS * 1000) : `${tS.toFixed(2)} s`}
+        </text>
+        <text x={SVG_W - 2} y={height + 16} className="axisLabel" textAnchor="end">
+          {startMs != null ? fmtGmt3(startMs + tE * 1000) : `${tE.toFixed(2)} s`}
+        </text>
 
         {/* waveforms */}
         {decimated.map((d, i) => (
@@ -309,7 +329,7 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
         {crosshair && (
           <CrosshairOverlay
             pos={crosshair} allSeries={allSeries} fs={fs} unit={unit}
-            minV={minV} maxV={maxV} height={height}
+            minV={minV} maxV={maxV} height={height} startMs={startMs}
           />
         )}
 
@@ -339,9 +359,10 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
 // ─── modal chart ─────────────────────────────────────────────────────────────
 
 function ModalChart({
-  allSeries, label, unit, fs, onClose,
+  allSeries, label, unit, fs, onClose, startMs,
 }: {
   allSeries: SeriesData[]; label: string; unit: string; fs: number; onClose: () => void;
+  startMs?: number;
 }) {
   const totalSamples = allSeries.length > 0
     ? Math.min(...allSeries.filter(s => s.values.length > 0).map(s => s.values.length))
@@ -433,6 +454,7 @@ function ModalChart({
             vStart={view.vStart} vEnd={view.vEnd} isZoomed={isZoomed}
             svgRef={view.svgRef} handlers={modalHandlers as Record<string, (e: never) => void>}
             crosshair={crosshairOn ? crosshairPos : null}
+            startMs={startMs}
             showHint
           />
         </div>
@@ -481,6 +503,7 @@ export function SignalChart({
   fs,
   height = 160,
   series,
+  startMs,
 }: {
   values?: number[];
   label: string;
@@ -489,6 +512,8 @@ export function SignalChart({
   fs: number;
   height?: number;
   series?: SeriesData[];
+  /** Epoch-ms of sample 0 — enables absolute GMT+3 timestamps on x-axis and crosshair. */
+  startMs?: number;
 }) {
   const allSeries: SeriesData[] = series ?? [{ values, color, label }];
   const totalSamples = allSeries.length > 0
@@ -549,6 +574,7 @@ export function SignalChart({
           allSeries={allSeries} unit={unit} fs={fs} height={height}
           vStart={view.vStart} vEnd={view.vEnd} isZoomed={isZoomed}
           svgRef={view.svgRef} handlers={view.handlers}
+          startMs={startMs}
         />
       </div>
 
@@ -575,6 +601,7 @@ export function SignalChart({
         <ModalChart
           allSeries={allSeries} label={label} unit={unit} fs={fs}
           onClose={() => setIsExpanded(false)}
+          startMs={startMs}
         />
       )}
     </div>

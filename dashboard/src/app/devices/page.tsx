@@ -27,6 +27,7 @@ export default function DevicesPage() {
 
 function CycleRow({
   cycleId,
+  deviceId,
   autoName,
   tsMs,
   batchCount,
@@ -37,6 +38,7 @@ function CycleRow({
   saving,
 }: {
   cycleId: string;
+  deviceId: string;
   autoName: string;
   tsMs: number;
   batchCount: number;
@@ -64,7 +66,7 @@ function CycleRow({
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: "1fr auto auto auto",
+      gridTemplateColumns: "1fr auto auto auto auto",
       alignItems: "center",
       gap: "8px 16px",
       padding: "9px 14px",
@@ -122,6 +124,14 @@ function CycleRow({
       <span style={{ color: "var(--faint)", fontSize: 11, whiteSpace: "nowrap" }}>
         {batchCount} batch{batchCount !== 1 ? "es" : ""}
       </span>
+
+      {/* View signals */}
+      <Link
+        href={`/cycles/${encodeURIComponent(cycleId)}?device=${encodeURIComponent(deviceId)}`}
+        className="badge"
+        style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+        View signals →
+      </Link>
     </div>
   );
 }
@@ -243,7 +253,7 @@ function DeviceCard({
         {/* Column headers */}
         <div style={{
           display: "grid",
-          gridTemplateColumns: "1fr auto auto auto",
+          gridTemplateColumns: "1fr auto auto auto auto",
           gap: "4px 16px",
           padding: "6px 14px",
           background: "rgba(0,0,0,0.03)",
@@ -254,6 +264,7 @@ function DeviceCard({
           <span>Time</span>
           <span style={{ textAlign: "right", minWidth: 80 }}>SBP / DBP</span>
           <span>Batches</span>
+          <span></span>
         </div>
 
         {cyclesLoading && cycles.length === 0 ? (
@@ -269,6 +280,7 @@ function DeviceCard({
             <CycleRow
               key={c.cycle_id}
               cycleId={c.cycle_id}
+              deviceId={deviceId}
               autoName={c.autoName}
               tsMs={c.ts_ms_start}
               batchCount={c.batch_count}
