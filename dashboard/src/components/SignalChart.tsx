@@ -11,6 +11,8 @@ export type SeriesData = {
   label: string;
 };
 
+type CrosshairPos = { svgX: number; sampleIdx: number };
+
 // ─── maths helpers ───────────────────────────────────────────────────────────
 
 function arrMin(a: number[], s: number, e: number) {
@@ -146,7 +148,81 @@ function useViewState(totalSamples: number) {
   };
 }
 
-// ─── inner SVG (handles both single and multi-series) ────────────────────────
+// ─── crosshair overlay (rendered inside the SVG) ─────────────────────────────
+
+function CrosshairOverlay({
+  pos, allSeries, fs, unit,
+  minV, maxV, height,
+}: {
+  pos: CrosshairPos;
+  allSeries: SeriesData[];
+  fs: number; unit: string;
+  minV: number; maxV: number;
+  height: number;
+}) {
+  const yT = PAD_Y;
+  const yB = height - PAD_Y;
+  const rng = Math.max(maxV - minV, 1e-9);
+
+  // Collect values at this sample index
+  const vals = allSeries.map(s => {
+    const idx = Math.max(0, Math.min(s.values.length - 1, pos.sampleIdx));
+    return s.values[idx] ?? null;
+  });
+
+  // Build tooltip lines
+  const tSec = (pos.sampleIdx / Math.max(fs, 1)).toFixed(3);
+  const multi = allSeries.length > 1;
+  const lines: { text: string; color: string }[] = [
+    { text: `t = ${tSec} s`, color: "oklch(72% 0.03 252)" },
+    ...allSeries.map((s, i) => ({
+      text: `${multi ? s.label + ": " : ""}${vals[i] != null ? fmt(vals[i]!) : "—"} ${unit}`,
+      color: s.color,
+    })),
+  ];
+
+  const lineH = 16, padV = 7, padH = 10;
+  const maxChars = Math.max(...lines.map(l => l.text.length));
+  const boxW = maxChars * 6.8 + padH * 2;
+  const boxH = lines.length * lineH + padV * 2;
+  const flip = pos.svgX > SVG_W * 0.62;
+  const tx = flip ? pos.svgX - 10 - boxW : pos.svgX + 10;
+  const ty = Math.max(yT + 2, Math.min(yB - boxH - 2, yT + 6));
+
+  return (
+    <g style={{ pointerEvents: "none" }}>
+      {/* vertical hair */}
+      <line x1={pos.svgX} y1={yT} x2={pos.svgX} y2={yB}
+        stroke="var(--ink)" strokeWidth={1} strokeDasharray="4 3" opacity={0.55} />
+
+      {/* dots at each series value */}
+      {allSeries.map((s, i) => {
+        const v = vals[i];
+        if (v == null) return null;
+        const cy = yT + (yB - yT) * (1 - (v - minV) / rng);
+        return (
+          <circle key={i}
+            cx={pos.svgX} cy={Math.max(yT, Math.min(yB, cy))}
+            r={4} fill={s.color} stroke="white" strokeWidth={1.5} />
+        );
+      })}
+
+      {/* tooltip box */}
+      <rect x={tx} y={ty} width={boxW} height={boxH}
+        fill="var(--ink)" opacity={0.9} rx={6} />
+      {lines.map((l, i) => (
+        <text key={i}
+          x={tx + padH} y={ty + padV + (i + 1) * lineH - 3}
+          fill={l.color} fontSize={11}
+          fontFamily="Cascadia Code, Consolas, monospace">
+          {l.text}
+        </text>
+      ))}
+    </g>
+  );
+}
+
+// ─── inner SVG (shared between compact + modal) ───────────────────────────────
 
 interface ChartCoreProps {
   allSeries: SeriesData[];
@@ -159,12 +235,12 @@ interface ChartCoreProps {
   showHint?: boolean;
   svgRef: React.RefObject<SVGSVGElement>;
   handlers: Record<string, (e: never) => void>;
+  crosshair?: CrosshairPos | null;
 }
 
-function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHint, svgRef, handlers }: ChartCoreProps) {
+function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHint, svgRef, handlers, crosshair }: ChartCoreProps) {
   const multi = allSeries.length > 1;
 
-  // Decimate each series to the visible slice
   const decimated = allSeries.map((s) => {
     const end = Math.max(0, Math.min(s.values.length, vEnd));
     const start = Math.max(0, Math.min(s.values.length - 1, vStart));
@@ -172,7 +248,6 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
     return { ...s, pts };
   });
 
-  // Global y-range across all series (with 6% padding)
   let gMin = Infinity, gMax = -Infinity;
   for (const d of decimated) {
     if (!d.pts.length) continue;
@@ -186,7 +261,6 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
   const maxV = gMax + rng * 0.06;
   const midV = (minV + maxV) / 2;
 
-  const activeSeries = allSeries.filter(s => s.values.length > 0);
   const tS = vStart / Math.max(fs, 1);
   const tE = vEnd / Math.max(fs, 1);
   const yT = PAD_Y, yM = PAD_Y + (height - PAD_Y * 2) / 2, yB = height - PAD_Y;
@@ -197,7 +271,7 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
         ref={svgRef}
         viewBox={`0 0 ${SVG_W} ${height + 20}`}
         className="signalChartSvg"
-        style={{ height, cursor: "crosshair", touchAction: "none" }}
+        style={{ height, cursor: crosshair !== undefined ? "crosshair" : "crosshair", touchAction: "none" }}
         aria-label={`${unit} waveform`}
         {...handlers}
       >
@@ -211,8 +285,6 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
         <text x={PAD_X - 5} y={yT + 4} className="axisLabel" textAnchor="end">{fmt(maxV)}</text>
         <text x={PAD_X - 5} y={yM + 4} className="axisLabel" textAnchor="end">{fmt(midV)}</text>
         <text x={PAD_X - 5} y={yB + 4} className="axisLabel" textAnchor="end">{fmt(minV)}</text>
-
-        {/* unit */}
         <text x={10} y={height / 2} className="axisLabel" textAnchor="middle"
           transform={`rotate(-90,10,${height / 2})`}>{unit}</text>
 
@@ -233,7 +305,15 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
           )
         ))}
 
-        {showHint && !isZoomed && activeSeries[0]?.values.length > 50 && (
+        {/* crosshair */}
+        {crosshair && (
+          <CrosshairOverlay
+            pos={crosshair} allSeries={allSeries} fs={fs} unit={unit}
+            minV={minV} maxV={maxV} height={height}
+          />
+        )}
+
+        {showHint && !isZoomed && !crosshair && allSeries[0]?.values.length > 50 && (
           <text x={SVG_W - 4} y={yT + 14} className="axisLabel" textAnchor="end"
             style={{ opacity: 0.38, fontSize: 11 }}>
             scroll · drag · dbl-click reset
@@ -241,10 +321,10 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
         )}
       </svg>
 
-      {/* legend for overlay */}
+      {/* legend */}
       {multi && (
         <div className="signalLegend">
-          {activeSeries.map((s, i) => (
+          {allSeries.filter(s => s.values.length > 0).map((s, i) => (
             <span key={i} className="signalLegendItem">
               <span className="signalLegendSwatch" style={{ background: s.color }} />
               {s.label}
@@ -267,8 +347,14 @@ function ModalChart({
     ? Math.min(...allSeries.filter(s => s.values.length > 0).map(s => s.values.length))
     : 0;
   const view = useViewState(totalSamples);
+  const [crosshairOn, setCrosshairOn] = useState(false);
+  const [crosshairPos, setCrosshairPos] = useState<CrosshairPos | null>(null);
+
   const isZoomed = view.vStart > 0 || view.vEnd < totalSamples;
   const viewSpan = view.vEnd - view.vStart;
+  const firstColor = allSeries[0]?.color ?? "var(--accent)";
+  const rangeLeft = totalSamples ? (view.vStart / totalSamples) * 100 : 0;
+  const rangeWidth = totalSamples ? (viewSpan / totalSamples) * 100 : 100;
 
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") onClose(); };
@@ -282,14 +368,35 @@ function ModalChart({
     return () => { document.body.style.overflow = prev; };
   }, []);
 
-  const rangeLeft = totalSamples ? (view.vStart / totalSamples) * 100 : 0;
-  const rangeWidth = totalSamples ? (viewSpan / totalSamples) * 100 : 100;
-  const firstColor = allSeries[0]?.color ?? "var(--accent)";
+  // Crosshair mouse tracking
+  const handleMouseMove = useCallback((ev: React.MouseEvent<SVGSVGElement>) => {
+    if (!crosshairOn) return;
+    const rect = (ev.currentTarget as SVGSVGElement).getBoundingClientRect();
+    const svgX = ((ev.clientX - rect.left) / rect.width) * SVG_W;
+    if (svgX < PAD_X || svgX > SVG_W) { setCrosshairPos(null); return; }
+    const frac = (svgX - PAD_X) / (SVG_W - PAD_X);
+    const raw = view.vStart + frac * (view.vEnd - view.vStart);
+    const sampleIdx = Math.max(view.vStart, Math.min(view.vEnd - 1, Math.round(raw)));
+    // Snap X to exact sample grid position
+    const snappedFrac = (sampleIdx - view.vStart) / Math.max(view.vEnd - view.vStart - 1, 1);
+    const snappedX = PAD_X + snappedFrac * (SVG_W - PAD_X);
+    setCrosshairPos({ svgX: snappedX, sampleIdx });
+  }, [crosshairOn, view.vStart, view.vEnd]);
+
+  const handleMouseLeave = useCallback(() => setCrosshairPos(null), []);
+
+  // Merge crosshair mouse handlers into existing handlers
+  const modalHandlers = {
+    ...view.handlers,
+    onMouseMove: handleMouseMove,
+    onMouseLeave: handleMouseLeave,
+  };
 
   return createPortal(
     <div className="signalModalBackdrop"
       onClick={(ev) => { if (ev.target === ev.currentTarget) onClose(); }}>
       <div className="signalModalBox">
+        {/* header */}
         <div className="signalModalHeader">
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             <span className="signalChartLabel" style={{ fontSize: 13 }}>{label}</span>
@@ -302,6 +409,15 @@ function ModalChart({
             </span>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {/* crosshair toggle */}
+            <button
+              className={`btn btnTiny${crosshairOn ? " btnPrimary" : ""}`}
+              type="button"
+              title="Toggle value crosshair"
+              onClick={() => { setCrosshairOn(v => !v); setCrosshairPos(null); }}
+            >
+              {crosshairOn ? "⊕ Values on" : "⊕ Values"}
+            </button>
             {isZoomed && (
               <button className="btn btnTiny" type="button" onClick={view.reset}>Reset zoom</button>
             )}
@@ -310,19 +426,21 @@ function ModalChart({
           </div>
         </div>
 
+        {/* chart */}
         <div style={{ padding: "0 4px" }}>
           <ChartCore
             allSeries={allSeries} unit={unit} fs={fs} height={420}
             vStart={view.vStart} vEnd={view.vEnd} isZoomed={isZoomed}
-            svgRef={view.svgRef} handlers={view.handlers} showHint
+            svgRef={view.svgRef} handlers={modalHandlers as Record<string, (e: never) => void>}
+            crosshair={crosshairOn ? crosshairPos : null}
+            showHint
           />
         </div>
 
+        {/* horizontal scroll slider */}
         {isZoomed && (
           <div className="signalScrollRow">
-            <span className="signalChartMeta" style={{ whiteSpace: "nowrap" }}>
-              {rangeLeft.toFixed(0)}%
-            </span>
+            <span className="signalChartMeta" style={{ whiteSpace: "nowrap" }}>{rangeLeft.toFixed(0)}%</span>
             <input type="range" className="signalScrollSlider"
               min={0} max={Math.max(0, totalSamples - viewSpan)} step={1} value={view.vStart}
               onChange={(ev) => view.panTo(parseInt(ev.target.value))}
@@ -342,7 +460,9 @@ function ModalChart({
 
         <div className="signalModalFooter">
           <span className="signalChartMeta" style={{ fontSize: 11 }}>
-            Scroll to zoom · drag to pan · double-click to reset · Esc to close
+            {crosshairOn
+              ? "Hover over the chart to read values · click ⊕ Values to turn off"
+              : "Scroll to zoom · drag to pan · double-click to reset · Esc to close"}
           </span>
         </div>
       </div>
@@ -368,7 +488,6 @@ export function SignalChart({
   color?: string;
   fs: number;
   height?: number;
-  /** When provided, renders multiple overlaid waveforms instead of a single one. */
   series?: SeriesData[];
 }) {
   const allSeries: SeriesData[] = series ?? [{ values, color, label }];
@@ -380,14 +499,10 @@ export function SignalChart({
   const [isExpanded, setIsExpanded] = useState(false);
   const isZoomed = view.vStart > 0 || view.vEnd < totalSamples;
   const viewSpan = view.vEnd - view.vStart;
-
+  const firstColor = allSeries[0]?.color ?? color;
+  const multi = allSeries.length > 1;
   const rangeLeft = totalSamples ? (view.vStart / totalSamples) * 100 : 0;
   const rangeWidth = totalSamples ? (viewSpan / totalSamples) * 100 : 100;
-  const firstColor = allSeries[0]?.color ?? color;
-  const durationS = totalSamples / Math.max(fs, 1);
-  const tStart = view.vStart / Math.max(fs, 1);
-  const tEnd = view.vEnd / Math.max(fs, 1);
-  const multi = allSeries.length > 1;
 
   const handleExpandClick = useCallback(() => setIsExpanded(true), []);
 
@@ -399,6 +514,10 @@ export function SignalChart({
       </div>
     );
   }
+
+  const durationS = totalSamples / Math.max(fs, 1);
+  const tStart = view.vStart / Math.max(fs, 1);
+  const tEnd = view.vEnd / Math.max(fs, 1);
 
   return (
     <div className="signalChartWrap">
@@ -417,11 +536,11 @@ export function SignalChart({
             <button className="btn btnTiny" type="button" onClick={view.reset}>Reset zoom</button>
           )}
           <button className="btn btnTiny signalExpandBtn" type="button"
-            onClick={handleExpandClick} title="Expand" aria-label="Open full-screen chart">⤢</button>
+            onClick={handleExpandClick} title="Expand to inspect values" aria-label="Open full-screen chart">⤢</button>
         </div>
       </div>
 
-      {/* compact chart */}
+      {/* compact chart — click to expand */}
       <div className="signalChartClickable" onClick={(ev) => {
         const tag = (ev.target as HTMLElement).tagName;
         if (tag !== "BUTTON" && !view.didMove.current) setIsExpanded(true);
@@ -433,7 +552,7 @@ export function SignalChart({
         />
       </div>
 
-      {/* horizontal scroll (single series, zoomed) */}
+      {/* scroll slider */}
       {isZoomed && !multi && (
         <div className="signalScrollRow">
           <input type="range" className="signalScrollSlider"
@@ -443,7 +562,7 @@ export function SignalChart({
         </div>
       )}
 
-      {/* range indicator */}
+      {/* range bar */}
       {isZoomed && !multi && (
         <div className="signalRangeBar">
           <div className="signalRangeThumb"
