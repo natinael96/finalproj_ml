@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+scripts/seed_admins.json
 
 # --- Python ---
 __pycache__/

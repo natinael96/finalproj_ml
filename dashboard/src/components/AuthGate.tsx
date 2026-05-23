@@ -225,6 +225,13 @@ export function UserBadge({ session }: { session: Session }) {
   const t = useT();
   const [status, setStatus] = useState("");
   const userId = session.user.id;
+  const email  = session.user.email ?? "";
+  // Prefer full_name from metadata, fall back to the local part of the email
+  const displayName: string =
+    (session.user.user_metadata?.full_name as string | undefined) ||
+    (session.user.user_metadata?.name as string | undefined) ||
+    email.split("@")[0] ||
+    "User";
 
   async function copyUserId() {
     try {
@@ -243,10 +250,12 @@ export function UserBadge({ session }: { session: Session }) {
 
   return (
     <div className="userBadge">
-      <span>
-        user_id <strong className="num">{userId.slice(0, 8)}...</strong>
-      </span>
-      <button type="button" className="btn btnTiny" onClick={copyUserId}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <strong style={{ fontSize: 14 }}>{displayName}</strong>
+        <span className="muted" style={{ fontSize: 12 }}>{email}</span>
+      </div>
+      <button type="button" className="btn btnTiny" onClick={copyUserId}
+        title={`user_id: ${userId}`}>
         {status || t("auth.copyUserId")}
       </button>
       <button type="button" className="btn btnTiny" onClick={signOut}>

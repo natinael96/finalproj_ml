@@ -1,56 +1,107 @@
 "use client";
 
-import { formatNumber, formatTime } from "@/lib/format";
+import { formatTime } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import type { DashboardMode, TelemetryWindow } from "@/lib/types";
 import { TelemetryEmptyState } from "./TelemetryEmptyState";
 
+
+/** Detect cycle boundaries: gap > 60 s between consecutive windows = new cycle. */
+function assignCycles(rows: TelemetryWindow[]): number[] {
+  const reversed = [...rows].reverse(); // oldest first
+  const nums = new Array(rows.length).fill(1);
+  let cycle = 1;
+  let prevMs: number | null = null;
+  for (let i = 0; i < reversed.length; i++) {
+    const ms = reversed[i].ts_ms_start ?? new Date(reversed[i].created_at).getTime();
+    if (prevMs !== null && ms - prevMs > 60_000) cycle++;
+    nums[reversed.length - 1 - i] = cycle; // map back to newest-first index
+    prevMs = ms;
+  }
+  return nums;
+}
+
+// ─── component ───────────────────────────────────────────────────────────────
+
 export function TelemetryTable({
   rows,
-  mode = "user"
+  mode = "user",
 }: {
   rows: TelemetryWindow[];
   mode?: DashboardMode;
 }) {
   const t = useT();
+  if (rows.length === 0) return <TelemetryEmptyState />;
 
-  if (rows.length === 0) {
-    return <TelemetryEmptyState />;
-  }
-
-  function sourceLabel(row: TelemetryWindow) {
-    if (row.synthetic == null) return t("common.unknown");
-    return row.synthetic ? t("common.synthetic") : t("common.sensor");
-  }
+  const cycleNums   = assignCycles(rows);
+  const maxCycle    = Math.max(...cycleNums);
+  const displayed   = mode === "user" ? rows.slice(0, 20) : rows;
 
   return (
     <div className="tableWrap">
       <table>
         <thead>
           <tr>
+            <th>#</th>
+            <th>Cycle</th>
             <th>{t("table.time")}</th>
             <th>{t("table.device")}</th>
-            <th>{t("table.sbp")}</th>
-            <th>{t("table.dbp")}</th>
-            <th>{t("table.source")}</th>
-            <th>{t("table.sigmaSbp")}</th>
-            <th>{t("table.sigmaDbp")}</th>
-            {mode === "detailed" ? <th>{t("table.id")}</th> : null}
+            <th style={{ textAlign: "center" }}>SBP / DBP</th>
+            {mode === "detailed" && (
+              <>
+                <th>{t("table.sigmaSbp")}</th>
+                <th>{t("table.sigmaDbp")}</th>
+                <th>{t("table.source")}</th>
+              </>
+            )}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => (
-            <tr key={row.id}>
-              <td className="nowrap">{formatTime(row.created_at)}</td>
-              <td>{row.device_id}</td>
-              <td className="num">{formatNumber(row.sbp_pred)}</td>
-              <td className="num">{formatNumber(row.dbp_pred)}</td>
-              <td>{sourceLabel(row)}</td>
-              <td className="num">{formatNumber(row.sbp_std, 2)}</td>
-              <td className="num">{formatNumber(row.dbp_std, 2)}</td>
-              {mode === "detailed" ? <td className="num">{row.id}</td> : null}
-            </tr>
-          ))}
+          {displayed.map((row, i) => {
+            const sbp    = row.sbp_pred;
+            const dbp    = row.dbp_pred;
+            const cycleN = cycleNums[i];
+            // Label cycles newest = "Latest", older ones counted backwards
+            const cycleLabel = maxCycle - cycleN + 1 === 1 ? "Latest" : `C ${maxCycle - cycleN + 1}`;
+
+            return (
+              <tr key={row.id}>
+                <td style={{ color: "var(--faint)", fontSize: 11 }}>{rows.length - i}</td>
+
+                <td>
+                  <span className="pill" style={{ fontSize: 11 }}>{cycleLabel}</span>
+                </td>
+
+                <td className="nowrap" style={{ fontSize: 13 }}>{formatTime(row.created_at)}</td>
+
+                <td style={{ color: "var(--muted)", fontSize: 13 }}>{row.device_id}</td>
+
+                <td style={{ textAlign: "center" }}>
+                  {sbp != null && dbp != null ? (
+                    <span className="bpCell">
+                      <strong>{sbp.toFixed(0)}</strong>
+                      <span style={{ color: "var(--faint)", margin: "0 2px" }}>/</span>
+                      {dbp.toFixed(0)}
+                    </span>
+                  ) : <span style={{ color: "var(--faint)" }}>—</span>}
+                </td>
+
+                {mode === "detailed" && (
+                  <>
+                    <td className="num" style={{ color: "var(--faint)", fontSize: 12 }}>
+                      {row.sbp_std != null ? `±${row.sbp_std.toFixed(1)}` : "—"}
+                    </td>
+                    <td className="num" style={{ color: "var(--faint)", fontSize: 12 }}>
+                      {row.dbp_std != null ? `±${row.dbp_std.toFixed(1)}` : "—"}
+                    </td>
+                    <td style={{ fontSize: 12, color: "var(--muted)" }}>
+                      {row.synthetic ? t("common.synthetic") : t("common.sensor")}
+                    </td>
+                  </>
+                )}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

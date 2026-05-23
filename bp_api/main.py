@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import time
+import math
 import uuid
 from uuid import UUID
 from pathlib import Path
@@ -250,6 +251,22 @@ def _ensemble_std(artifact: ArtifactBundle, x: np.ndarray) -> Tuple[Optional[flo
     except Exception:
         pass
     return sbp_std, dbp_std
+
+
+def _clean_floats(obj: object) -> object:
+    """Replace NaN / Inf floats (including inside lists/dicts) with None.
+
+    PostgREST rejects JSON payloads that contain bare NaN or Infinity values,
+    producing the "Out of range float values are not JSON compliant" error.
+    This must be applied to every row before inserting into Supabase.
+    """
+    if isinstance(obj, float):
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    if isinstance(obj, list):
+        return [_clean_floats(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _clean_floats(v) for k, v in obj.items()}
+    return obj
 
 
 def _supabase_postgrest_insert(table: str, row: Dict[str, object]) -> None:
@@ -780,7 +797,7 @@ def _ingest_esp32_buffered_sync(req: Esp32IngestRequest, buf: _DeviceBuffer) -> 
                 db_row["accel"] = accel_w.tolist()
                 db_row["gyro"] = gyro_w.tolist()
             try:
-                _supabase_insert_telemetry(db_row)
+                _supabase_insert_telemetry(_clean_floats(db_row))
                 wrote += 1
             except Exception as e:
                 return Esp32IngestResponse(
@@ -949,7 +966,7 @@ async def _process_buffered_windows(
                 db_row["accel"] = accel_w.tolist()
                 db_row["gyro"] = gyro_w.tolist()
             try:
-                await _supabase_insert_telemetry_async(db_row)
+                await _supabase_insert_telemetry_async(_clean_floats(db_row))
                 wrote += 1
             except Exception as e:
                 await ws.send_json({"ok": False, "error": f"db_insert_failed: {e}"})

@@ -289,6 +289,21 @@ tbody td { padding: 12px; border-top: 1px solid var(--line); }
 .devicePill.active .devicePillDot { background: var(--paper); }
 .cyclePill { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; }
 
+/* Multi-series legend */
+.signalLegend {
+  display: flex; gap: 14px; flex-wrap: wrap;
+  padding: 4px 0 2px PAD_X;
+  padding-left: 56px;
+}
+.signalLegendItem {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--muted);
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+.signalLegendSwatch {
+  display: inline-block; width: 18px; height: 3px; border-radius: 999px; flex-shrink: 0;
+}
+
 /* Expand button */
 .signalExpandBtn { font-size: 16px; line-height: 1; padding: 4px 9px; }
 
@@ -332,6 +347,12 @@ tbody td { padding: 12px; border-top: 1px solid var(--line); }
 .signalModalFooter {
   display: flex; justify-content: flex-end; padding-top: 4px;
   border-top: 1px solid var(--line);
+}
+
+/* BP reading cell */
+.bpCell {
+  font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
+  letter-spacing: -.02em;
 }
 
 .authCard { max-width: 900px; }
