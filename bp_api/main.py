@@ -293,6 +293,33 @@ def _supabase_insert_raw_batch(row: Dict[str, object]) -> None:
     _supabase_postgrest_insert("esp32_raw_batches", row)
 
 
+def _supabase_register_device_name(device_id: str, user_id: str, name: str) -> None:
+    """Insert a device row with the firmware-provided label only if none exists yet.
+    Silently ignores errors so it never blocks the ingest path."""
+    if not supabase_client or not name.strip():
+        return
+    try:
+        existing = supabase_client.table("devices") \
+            .select("id,label") \
+            .eq("user_id", user_id) \
+            .eq("device_id", device_id) \
+            .limit(1) \
+            .execute()
+        if not existing.data:
+            # First time seeing this device — register it with the firmware name
+            supabase_client.table("devices").insert(
+                {"user_id": user_id, "device_id": device_id, "label": name.strip()}
+            ).execute()
+        elif existing.data[0].get("label") is None:
+            # Row exists but user has never set a label — fill it from firmware
+            supabase_client.table("devices").update({"label": name.strip()}) \
+                .eq("user_id", user_id) \
+                .eq("device_id", device_id) \
+                .execute()
+    except Exception:
+        pass  # non-critical; don't break the ingest response
+
+
 async def _supabase_insert_telemetry_async(row: Dict[str, object]) -> None:
     # Keep slow PostgREST calls out of the WebSocket event loop.
     await asyncio.to_thread(_supabase_insert_telemetry, row)
@@ -473,6 +500,7 @@ class Esp32IngestRequest(BaseModel):
     user_id: Optional[str] = Field(default=None, max_length=120)
     session_id: Optional[str] = Field(default=None, max_length=120)
     persist_raw: bool = False
+    device_name: Optional[str] = Field(default=None, max_length=120)
 
 
 class Esp32IngestResponse(BaseModel):
@@ -682,6 +710,9 @@ def _ingest_esp32_buffered_sync(req: Esp32IngestRequest, buf: _DeviceBuffer) -> 
             raw_row["cycle_id"] = buf.cycle_id
             _supabase_insert_raw_batch(raw_row)
             raw_wrote = 1
+            # Auto-register the device label from firmware (only if no label set yet)
+            if req.device_name:
+                _supabase_register_device_name(req.device_id, db_user_id, req.device_name)
         except Exception as e:
             return Esp32IngestResponse(ok=False, error=f"raw_db_insert_failed: {e}")
 

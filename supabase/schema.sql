@@ -88,11 +88,21 @@ create index if not exists esp32_raw_batches_user_time_idx
 create index if not exists esp32_raw_batches_device_time_idx
   on public.esp32_raw_batches(device_id, created_at desc);
 
+-- Custom labels for 2000-sample prediction cycles
+create table if not exists public.cycle_labels (
+  cycle_id   text not null,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  label      text not null,
+  created_at timestamptz not null default now(),
+  primary key (cycle_id, user_id)
+);
+
 -- RLS
 alter table public.devices enable row level security;
 alter table public.sessions enable row level security;
 alter table public.telemetry_windows enable row level security;
 alter table public.esp32_raw_batches enable row level security;
+alter table public.cycle_labels enable row level security;
 
 -- Devices
 drop policy if exists "devices_select_own" on public.devices;
@@ -176,3 +186,23 @@ create policy "esp32_raw_batches_delete_own"
   on public.esp32_raw_batches for delete
   using (user_id is not null and auth.uid() = user_id);
 
+-- Cycle labels
+drop policy if exists "cycle_labels_select_own" on public.cycle_labels;
+create policy "cycle_labels_select_own"
+  on public.cycle_labels for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "cycle_labels_insert_own" on public.cycle_labels;
+create policy "cycle_labels_insert_own"
+  on public.cycle_labels for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "cycle_labels_update_own" on public.cycle_labels;
+create policy "cycle_labels_update_own"
+  on public.cycle_labels for update
+  using (auth.uid() = user_id);
+
+drop policy if exists "cycle_labels_delete_own" on public.cycle_labels;
+create policy "cycle_labels_delete_own"
+  on public.cycle_labels for delete
+  using (auth.uid() = user_id);

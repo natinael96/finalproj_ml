@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "./Card";
 import { SignalChart, SeriesData } from "./SignalChart";
 import {
@@ -9,6 +9,7 @@ import {
 } from "@/lib/rawBatches";
 import { formatShortTime } from "@/lib/format";
 import { useDeviceLabels } from "@/lib/deviceLabels";
+import { useCycleLabels } from "@/lib/cycleLabels";
 
 type TabId = "ecg" | "ppg" | "accel" | "all";
 type AggMode = "overlay" | "average";
@@ -29,6 +30,8 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
   const [compareMode, setCompareMode] = useState(false);
   const [selectedCycles, setSelectedCycles] = useState<string[]>([]);
   const [aggMode, setAggMode] = useState<AggMode>("overlay");
+  const [editingCycle, setEditingCycle] = useState<string | null>(null);
+  const [cycleDraft, setCycleDraft] = useState("");
 
   useEffect(() => {
     if (initialDevice && !selectedDevice) setSelectedDevice(initialDevice);
@@ -36,6 +39,8 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
 
   const { devices, loading: devicesLoading, reload: reloadDevices } = useDeviceList();
   const { displayName } = useDeviceLabels();
+  const { customLabel, saveLabel: saveCycleLabel, saving: cycLabelSaving } = useCycleLabels();
+  const cycleEditInputRef = useRef<HTMLInputElement>(null);
   const { cycles, loading: cyclesLoading, reload: reloadCycles } = useCycleList(selectedDevice);
   const { signals, loading, error, reload } = useRawBatches({
     device: selectedDevice,

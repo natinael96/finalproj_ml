@@ -11,6 +11,8 @@
 #define API_PORT 8088
 
 #define WS_DEVICE_ID "esp32-001"
+// Friendly name shown on the dashboard (can be renamed there too).
+#define DEVICE_NAME "My ESP32"
 // Batch upload: 20 samples every 1 s → fs_hz=20, window_s=1.0
 #define WS_FS_HZ 20
 #define WS_WINDOW_S 1.0f

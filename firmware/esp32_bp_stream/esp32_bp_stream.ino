@@ -314,6 +314,9 @@ bool sendWindowHttp() {
   body.reserve(JSON_BODY_RESERVE);
 
   body += "{\"device_id\":\""; body += WS_DEVICE_ID;
+#if defined(DEVICE_NAME)
+  body += "\",\"device_name\":\""; body += DEVICE_NAME;
+#endif
   body += "\",\"ts_ms_start\":"; body += String((long long)windowStartMs);
   body += ",\"fs_hz\":";         body += String(SAMPLE_RATE_HZ);
   body += ",\"window_s\":";      body += String((float)API_WINDOW_S, 1);
