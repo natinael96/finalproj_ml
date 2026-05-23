@@ -158,6 +158,8 @@ function HistoryView({ sessionNode }: { sessionNode: ReactNode }) {
         <DailyTrendChart points={dailyTrends} />
       </Card>
 
+      <SignalViewer device={device} />
+
       <Card>
         <div className="cardTitle">{t("history.storedWindows")}</div>
         <TelemetryTable rows={visibleRows} mode={mode} />
