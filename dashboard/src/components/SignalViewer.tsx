@@ -8,6 +8,7 @@ import {
   useMultiCycleBatches, averageSignals,
 } from "@/lib/rawBatches";
 import { formatShortTime } from "@/lib/format";
+import { useDeviceLabels } from "@/lib/deviceLabels";
 
 type TabId = "ecg" | "ppg" | "accel" | "all";
 type AggMode = "overlay" | "average";
@@ -34,6 +35,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
   }, [initialDevice]); // eslint-disable-line
 
   const { devices, loading: devicesLoading, reload: reloadDevices } = useDeviceList();
+  const { displayName } = useDeviceLabels();
   const { cycles, loading: cyclesLoading, reload: reloadCycles } = useCycleList(selectedDevice);
   const { signals, loading, error, reload } = useRawBatches({
     device: selectedDevice,
@@ -175,7 +177,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
               <button key={d} type="button"
                 className={`devicePill${selectedDevice === d ? " active" : ""}`}
                 onClick={() => changeDevice(d)} title={d}>
-                <span className="devicePillDot" />{d}
+                <span className="devicePillDot" />{displayName(d)}
               </button>
             ))}
           </div>
@@ -255,7 +257,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
       {/* ── single-cycle empty state ── */}
       {!compareMode && !loading && !signals && !error && (
         <div className="chartEmpty">
-          <strong>No data{selectedDevice ? ` for "${selectedDevice}"` : ""}{selectedCycle ? " in this cycle" : ""}</strong>
+          <strong>No data{selectedDevice ? ` for "${displayName(selectedDevice)}"` : ""}{selectedCycle ? " in this cycle" : ""}</strong>
           <span>
             {selectedCycle ? "Select a different cycle above." :
               selectedDevice ? "Try a different device or send data from the ESP32." :

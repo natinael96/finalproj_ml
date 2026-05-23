@@ -4,6 +4,7 @@ import { formatTime } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import type { DashboardMode, TelemetryWindow } from "@/lib/types";
 import { TelemetryEmptyState } from "./TelemetryEmptyState";
+import { useDeviceLabels } from "@/lib/deviceLabels";
 
 
 /** Detect cycle boundaries: gap > 60 s between consecutive windows = new cycle. */
@@ -31,6 +32,7 @@ export function TelemetryTable({
   mode?: DashboardMode;
 }) {
   const t = useT();
+  const { displayName } = useDeviceLabels();
   if (rows.length === 0) return <TelemetryEmptyState />;
 
   const cycleNums   = assignCycles(rows);
@@ -74,7 +76,10 @@ export function TelemetryTable({
 
                 <td className="nowrap" style={{ fontSize: 13 }}>{formatTime(row.created_at)}</td>
 
-                <td style={{ color: "var(--muted)", fontSize: 13 }}>{row.device_id}</td>
+                <td style={{ color: "var(--muted)", fontSize: 13 }}
+                  title={row.device_id ?? undefined}>
+                  {displayName(row.device_id ?? "")}
+                </td>
 
                 <td style={{ textAlign: "center" }}>
                   {sbp != null && dbp != null ? (
