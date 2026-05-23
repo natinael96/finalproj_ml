@@ -6,6 +6,7 @@ import { Card, SectionHeader } from "@/components/Card";
 import { AlertBadge, KpiTile } from "@/components/KpiTile";
 import { TelemetryTable } from "@/components/TelemetryTable";
 import { TrendChart } from "@/components/TrendChart";
+import { SignalViewer } from "@/components/SignalViewer";
 import { classifyBp, summarizeTelemetry } from "@/lib/bp";
 import { formatInteger, formatShortTime } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -148,6 +149,8 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
         </div>
         <TrendChart rows={rows.slice(0, 40)} threshold={threshold} />
       </Card>
+
+      <SignalViewer device={summary.latest?.device_id ?? ""} />
 
       <Card className="callout">
         <div className="cardTitle">{t("live.hardwareChecklist")}</div>

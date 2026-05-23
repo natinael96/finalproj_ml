@@ -2,7 +2,7 @@
  * ESP32 multi-sensor batch uploader for finalproj_ml bp_api
  *
  * Endpoint: POST http://<API_HOST>:<API_PORT>/esp32/ingest
- * Sends a small batch (default 10 samples @ 10 Hz = every 1 s), then clears buffers.
+ * Sends a small batch (default 20 samples @ 20 Hz = every 1 s), then clears buffers.
  *
  * Libraries (Arduino Library Manager):
  *   - MAX30100lib by oxullo

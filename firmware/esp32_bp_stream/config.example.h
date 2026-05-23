@@ -11,8 +11,8 @@
 #define API_PORT 8088
 
 #define WS_DEVICE_ID "esp32-001"
-// Batch upload: N samples every INTERVAL ms (default 10 @ 1 Hz = 10 samples/s)
-#define WS_FS_HZ 10
+// Batch upload: 20 samples every 1 s → fs_hz=20, window_s=1.0
+#define WS_FS_HZ 20
 #define WS_WINDOW_S 1.0f
 
 // User/session for Supabase are set on the server (.env BP_DEFAULT_USER_ID), not on ESP32.
@@ -20,7 +20,7 @@
 // Optional — match BP_API_KEY on the server if set
 #define API_KEY ""
 
-// Set 1 to use WebSocket streaming (legacy); 0 = HTTP POST /esp32/ingest every 8 s
+// Set 1 to use WebSocket streaming (legacy); 0 = HTTP POST /esp32/ingest every 1 s
 #define USE_WEBSOCKET 0
 
 // NTP (East Africa Time = UTC+3)

@@ -206,6 +206,34 @@ tbody td { padding: 12px; border-top: 1px solid var(--line); }
 .legendDbp { background: var(--accent2); }
 .legendThreshold { background: var(--bad); opacity: .7; }
 
+/* Signal waveform viewer */
+.signalChartWrap { display: grid; gap: 6px; }
+.signalChartHeader { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.signalChartLabel { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); }
+.signalChartMeta { font-size: 12px; color: var(--faint); font-family: "Cascadia Code", Consolas, monospace; }
+.signalChartSvg {
+  width: 100%; overflow: visible; display: block;
+  border-radius: 12px;
+  background: color-mix(in oklch, var(--card) 60%, transparent);
+  border: 1px solid var(--line);
+  user-select: none;
+}
+.signalChartSvg:active { cursor: grabbing; }
+.signalGridLine { stroke: var(--line); stroke-width: 1; }
+.signalGridMid { stroke-dasharray: 5 5; opacity: .6; }
+
+/* Zoom range indicator bar */
+.signalRangeBar {
+  position: relative; height: 6px; border-radius: 999px;
+  background: color-mix(in oklch, var(--line) 80%, transparent);
+  overflow: hidden;
+}
+.signalRangeThumb {
+  position: absolute; top: 0; height: 100%;
+  border-radius: 999px; opacity: .72;
+  transition: left .06s linear, width .06s linear;
+}
+
 .authCard { max-width: 900px; }
 .userBadge { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .timeline { display: grid; gap: 12px; }
