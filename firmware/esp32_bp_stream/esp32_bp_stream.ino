@@ -155,7 +155,8 @@ void unlockI2c() {
 }
 
 // ============================= PPG FIFO service =============================
-// MAX30100 FIFO locks up when it overflows (~16 samples @ 50 Hz) if not drained.
+// MAX30100 FIFO holds 16 samples. At 100 Hz hardware / 20 Hz app loop the FIFO
+// fills ~5 samples per tick; drain it every tick to avoid overflow lockup.
 // setup() used to start the sensor before WiFi/NTP, leaving it unattended for
 // many seconds; HTTP POST can block similarly — resetFifo() recovers.
 static bool ppgRecovering = false;
@@ -227,7 +228,9 @@ bool initMax30100() {
 
   ppgSensor.setMode(MAX30100_MODE_SPO2_HR);
   ppgSensor.setLedsCurrent(MAX30100_LED_CURR_50MA, MAX30100_LED_CURR_50MA);
-  ppgSensor.setSamplingRate(MAX30100_SAMPRATE_50HZ);
+  // 100 Hz hardware → exactly 5 samples per 50 ms firmware tick at 20 Hz app rate.
+  // Clean 5× oversampling; FIFO fills at a whole-number rate and never fractionally.
+  ppgSensor.setSamplingRate(MAX30100_SAMPRATE_100HZ);
   ppgSensor.setLedsPulseWidth(MAX30100_SPC_PW_1600US_16BITS);
   ppgSensor.setHighresModeEnabled(true);
   ppgSensor.resetFifo();
@@ -502,18 +505,26 @@ void setup() {
   } else {
     mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
     mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    // Anti-aliasing: cut at 10 Hz = fs/2 for 20 Hz sampling (Nyquist limit).
+    // 21 Hz would alias motion frequencies 10-21 Hz back into the signal band.
+    mpu.setFilterBandwidth(MPU6050_BAND_10_HZ);
   }
 
   resetWindow();
 
-  Serial.print("[cfg] sample_rate_hz=");  Serial.println(SAMPLE_RATE_HZ);
+  Serial.print("[cfg] sample_rate_hz=");   Serial.println(SAMPLE_RATE_HZ);
   Serial.print("[cfg] api=http://");
   Serial.print(API_HOST); Serial.print(":"); Serial.print(API_PORT);
   Serial.println("/esp32/ingest");
-  Serial.print("[cfg] batch_samples=");   Serial.println(WINDOW_SAMPLES);
+  Serial.print("[cfg] batch_samples=");    Serial.println(WINDOW_SAMPLES);
   Serial.print("[cfg] batch_interval_s="); Serial.println(API_WINDOW_S, 1);
   Serial.print("[cfg] json_body_reserve="); Serial.println(JSON_BODY_RESERVE);
+  // Sync summary:
+  //   ECG  : ADC read at every 20 Hz tick                 → 0 ms latency
+  //   PPG  : MAX30100 @ 100 Hz HW, FIFO drained each loop → ≤10 ms latency
+  //   IMU  : MPU6050 read at every 20 Hz tick, LPF 10 Hz  → 0 ms latency
+  //   All three stored together in pushSample() → synchronized at 20 Hz.
+  Serial.println("[cfg] sync: ECG/IMU=0ms PPG<=10ms all@20Hz");
 }
 
 // ============================= Loop =============================
