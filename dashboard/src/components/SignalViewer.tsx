@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card } from "./Card";
 import { SignalChart, SeriesData } from "./SignalChart";
 import {
@@ -30,8 +30,6 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
   const [compareMode, setCompareMode] = useState(false);
   const [selectedCycles, setSelectedCycles] = useState<string[]>([]);
   const [aggMode, setAggMode] = useState<AggMode>("overlay");
-  const [editingCycle, setEditingCycle] = useState<string | null>(null);
-  const [cycleDraft, setCycleDraft] = useState("");
 
   useEffect(() => {
     if (initialDevice && !selectedDevice) setSelectedDevice(initialDevice);
@@ -39,8 +37,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
 
   const { devices, loading: devicesLoading, reload: reloadDevices } = useDeviceList();
   const { displayName } = useDeviceLabels();
-  const { customLabel, saveLabel: saveCycleLabel, saving: cycLabelSaving } = useCycleLabels();
-  const cycleEditInputRef = useRef<HTMLInputElement>(null);
+  const { customLabel } = useCycleLabels();
   const { cycles, loading: cyclesLoading, reload: reloadCycles } = useCycleList(selectedDevice);
   const { signals, loading, error, reload } = useRawBatches({
     device: selectedDevice,
@@ -212,6 +209,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
                 const cycleColor = compareMode && isSelected
                   ? PALETTE[selectedCycles.indexOf(c.cycle_id) % PALETTE.length]
                   : undefined;
+                const displayCycleName = customLabel(c.cycle_id) ?? `Cycle ${cycles.length - i}`;
                 return (
                   <button key={c.cycle_id} type="button"
                     className={`devicePill cyclePill${isSelected ? " active" : ""}`}
@@ -226,7 +224,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
                     <span className="devicePillDot" style={{
                       background: cycleColor ?? (isSelected ? "var(--paper)" : "var(--accent2)")
                     }} />
-                    Cycle {cycles.length - i}
+                    {displayCycleName}
                   </button>
                 );
               })}
