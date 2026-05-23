@@ -6,6 +6,7 @@ import json
 import os
 import socket
 import time
+import uuid
 from uuid import UUID
 from pathlib import Path
 from functools import lru_cache
@@ -479,6 +480,9 @@ class _DeviceBuffer:
         self.fs_hz: int = 0
         self.ts_ms_start: int = 0
         self.last_seen_ms: int = int(time.time() * 1000)
+        # Identifies the current 2000-sample accumulation window.
+        # Rotated to a new UUID every time a window is flushed for prediction.
+        self.cycle_id: str = str(uuid.uuid4())
 
 
 _buffers: Dict[str, _DeviceBuffer] = {}
@@ -656,6 +660,9 @@ def _ingest_esp32_buffered_sync(req: Esp32IngestRequest, buf: _DeviceBuffer) -> 
             raw_row = _build_esp32_raw_batch_row(req, batch_n, db_user_id)
             if db_session_id:
                 raw_row["session_id"] = db_session_id
+            # Tag with the current accumulation-window cycle so the dashboard can
+            # group all batches that belong to the same 2000-sample prediction run.
+            raw_row["cycle_id"] = buf.cycle_id
             _supabase_insert_raw_batch(raw_row)
             raw_wrote = 1
         except Exception as e:
@@ -792,6 +799,8 @@ def _ingest_esp32_buffered_sync(req: Esp32IngestRequest, buf: _DeviceBuffer) -> 
         if buf.gyro:
             del buf.gyro[: min(win_n, len(buf.gyro))]
         buf.ts_ms_start += int(1000.0 * pred_window_s)
+        # Start a fresh cycle so the next batches get a distinct cycle_id.
+        buf.cycle_id = str(uuid.uuid4())
 
     buf_n = min(len(buf.ecg), len(buf.ppg))
     return Esp32IngestResponse(

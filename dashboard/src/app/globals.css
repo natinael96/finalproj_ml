@@ -224,14 +224,114 @@ tbody td { padding: 12px; border-top: 1px solid var(--line); }
 
 /* Zoom range indicator bar */
 .signalRangeBar {
-  position: relative; height: 6px; border-radius: 999px;
+  position: relative; height: 5px; border-radius: 999px;
   background: color-mix(in oklch, var(--line) 80%, transparent);
   overflow: hidden;
 }
 .signalRangeThumb {
   position: absolute; top: 0; height: 100%;
-  border-radius: 999px; opacity: .72;
+  border-radius: 999px; opacity: .7;
   transition: left .06s linear, width .06s linear;
+}
+
+/* Horizontal scroll row */
+.signalScrollRow {
+  display: flex; align-items: center; gap: 10px;
+}
+.signalScrollSlider {
+  flex: 1; -webkit-appearance: none; appearance: none;
+  height: 5px; border-radius: 999px; outline: none; cursor: pointer;
+  background: color-mix(in oklch, var(--line) 80%, transparent);
+  accent-color: var(--accent);
+}
+.signalScrollSlider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--paper);
+  box-shadow: 0 1px 6px color-mix(in oklch, var(--accent) 38%, transparent);
+  cursor: grab;
+}
+.signalScrollSlider::-webkit-slider-thumb:active { cursor: grabbing; }
+.signalScrollSlider::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--paper);
+  background: var(--accent); cursor: grab;
+}
+
+/* Device filter bar */
+.deviceFilterBar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px; border-radius: 14px;
+  background: color-mix(in oklch, var(--card) 70%, transparent);
+  border: 1px solid var(--line);
+}
+.devicePillRow { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+.devicePill {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 5px 12px; font-size: 12px; font-weight: 700;
+  background: color-mix(in oklch, var(--paper) 80%, transparent);
+  color: var(--muted); cursor: pointer;
+  transition: background .13s ease, color .13s ease, border-color .13s ease, transform .12s ease;
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.devicePill:hover {
+  background: color-mix(in oklch, var(--accent) 9%, var(--paper));
+  color: var(--ink); transform: translateY(-1px);
+}
+.devicePill.active {
+  background: var(--ink); color: var(--paper);
+  border-color: var(--ink);
+}
+.devicePillDot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  background: var(--good);
+}
+.devicePill.active .devicePillDot { background: var(--paper); }
+.cyclePill { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; }
+
+/* Expand button */
+.signalExpandBtn { font-size: 16px; line-height: 1; padding: 4px 9px; }
+
+/* Click-to-open hint on compact chart */
+.signalChartClickable { cursor: pointer; }
+.signalChartClickable:hover .signalChartSvg {
+  border-color: color-mix(in oklch, var(--accent) 40%, var(--line));
+  background: color-mix(in oklch, var(--accent) 4%, var(--card));
+  transition: border-color .15s ease, background .15s ease;
+}
+
+/* Full-screen modal */
+.signalModalBackdrop {
+  position: fixed; inset: 0; z-index: 9999;
+  background: color-mix(in oklch, black 55%, transparent);
+  backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: fadeIn .18s ease;
+}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.signalModalBox {
+  width: min(1140px, 100%); max-height: calc(100vh - 40px);
+  background: var(--paper); border-radius: 24px;
+  border: 1px solid var(--line);
+  box-shadow: 0 32px 90px color-mix(in oklch, black 48%, transparent);
+  display: flex; flex-direction: column; gap: 14px;
+  padding: 20px 22px;
+  overflow-y: auto;
+  animation: popUp .2s cubic-bezier(.34,1.48,.64,1);
+}
+@keyframes popUp {
+  from { opacity: 0; transform: scale(.93) translateY(12px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.signalModalHeader {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+}
+.signalModalFooter {
+  display: flex; justify-content: flex-end; padding-top: 4px;
+  border-top: 1px solid var(--line);
 }
 
 .authCard { max-width: 900px; }

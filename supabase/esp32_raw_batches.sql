@@ -11,6 +11,10 @@ create table if not exists public.esp32_raw_batches (
   window_s real not null,
   sample_count int not null check (sample_count > 0),
 
+  -- Identifies the 2000-sample accumulation window this batch belongs to.
+  -- Rotated server-side after every completed prediction window.
+  cycle_id text,
+
   ecg jsonb not null,
   ppg jsonb not null,
   ax jsonb,
@@ -27,6 +31,8 @@ create index if not exists esp32_raw_batches_user_time_idx
   on public.esp32_raw_batches(user_id, created_at desc);
 create index if not exists esp32_raw_batches_device_time_idx
   on public.esp32_raw_batches(device_id, created_at desc);
+create index if not exists esp32_raw_batches_cycle_idx
+  on public.esp32_raw_batches(device_id, cycle_id);
 
 alter table public.esp32_raw_batches enable row level security;
 
