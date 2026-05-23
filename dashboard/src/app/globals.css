@@ -1,4 +1,5 @@
-:root {
+:root,
+[data-theme="light"] {
   color-scheme: light;
   --bg: oklch(94% 0.028 87);
   --paper: oklch(98% 0.018 87);
@@ -14,6 +15,23 @@
   --bad: oklch(55% 0.18 29);
   --shadow: 0 22px 70px color-mix(in oklch, var(--ink) 14%, transparent);
   --r: 22px;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: oklch(18% 0.03 252);
+  --paper: oklch(22% 0.035 252);
+  --ink: oklch(96% 0.02 87);
+  --muted: oklch(72% 0.03 252);
+  --faint: oklch(58% 0.03 252);
+  --line: oklch(32% 0.03 252);
+  --card: oklch(24% 0.035 252);
+  --accent: oklch(72% 0.14 36);
+  --accent2: oklch(70% 0.09 194);
+  --good: oklch(72% 0.12 148);
+  --warn: oklch(78% 0.13 72);
+  --bad: oklch(68% 0.16 29);
+  --shadow: 0 22px 70px color-mix(in oklch, black 45%, transparent);
 }
 
 * { box-sizing: border-box; }
@@ -194,6 +212,61 @@ tbody td { padding: 12px; border-top: 1px solid var(--line); }
 .timelineItem { display: grid; grid-template-columns: 28px 1fr; gap: 12px; align-items: start; }
 .timelineDot { width: 14px; height: 14px; margin-top: 4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 7px color-mix(in oklch, var(--accent) 12%, transparent); }
 .callout { background: color-mix(in oklch, var(--accent) 8%, var(--paper)); border-color: color-mix(in oklch, var(--accent) 24%, var(--line)); }
+.toolbar {
+  display: grid; gap: 10px; padding: 12px; border-radius: 16px;
+  border: 1px solid var(--line); background: color-mix(in oklch, var(--paper) 88%, transparent);
+}
+.toolbarField { display: grid; gap: 6px; }
+.toolbarLabel { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; }
+.toolbar select {
+  width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px;
+  background: var(--card); color: var(--ink);
+}
+.clinicalBanner {
+  display: flex; gap: 14px; align-items: flex-start; justify-content: space-between;
+  padding: 14px 18px; border-radius: 18px; margin-bottom: 18px;
+  border: 1px solid color-mix(in oklch, var(--warn) 35%, var(--line));
+  background: color-mix(in oklch, var(--warn) 8%, var(--paper));
+  font-size: 14px;
+}
+.clinicalBannerCopy { display: grid; gap: 4px; min-width: 0; }
+.clinicalBanner strong { color: var(--ink); }
+.clinicalBanner span { color: var(--muted); }
+.clinicalBannerDismiss { flex-shrink: 0; }
+.emptyStateSteps { text-align: left; place-content: start; }
+.emptyStepsList { margin: 8px 0 0; padding-left: 20px; color: var(--muted); text-align: left; }
+.emptyStepsList li { margin: 6px 0; }
+.skeletonPage, .skeletonCard, .skeletonChart, .skeletonTable { animation: pulse 1.2s ease-in-out infinite; }
+.skeletonLine, .skeletonChartArea, .skeletonTableRow {
+  border-radius: 12px; background: color-mix(in oklch, var(--ink) 8%, var(--line));
+}
+.skeletonLine.short { height: 14px; width: 28%; }
+.skeletonLine.medium { height: 14px; width: 62%; margin-top: 10px; }
+.skeletonLine.tall { height: 36px; width: 48%; margin-top: 14px; }
+.skeletonCard { border: 1px solid var(--line); border-radius: var(--r); padding: 18px; min-height: 110px; }
+.skeletonChartArea { min-height: 220px; margin-top: 14px; border-radius: 18px; }
+.skeletonTable { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 18px; }
+.skeletonTableRow { display: grid; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.srOnly {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .55; }
+}
+[data-theme="dark"] .heroCopy {
+  background: color-mix(in oklch, var(--ink) 92%, var(--card));
+  color: oklch(96% 0.02 87);
+}
+[data-theme="dark"] .heroCopy .muted { color: oklch(78% 0.03 252); }
+.dailySingle { min-height: 120px; display: grid; place-content: center; }
+.dailySingleStat { display: grid; gap: 6px; text-align: center; }
+.dailySingleStat strong { font-size: 28px; color: var(--ink); }
+.stageCard.tone-good { border-color: color-mix(in oklch, var(--good) 35%, var(--line)); }
+.stageCard.tone-warn { border-color: color-mix(in oklch, var(--warn) 35%, var(--line)); }
+.stageCard.tone-bad { border-color: color-mix(in oklch, var(--bad) 35%, var(--line)); }
+.stageCard strong { display: block; margin-bottom: 4px; }
 .preBlock { white-space: pre-wrap; overflow: auto; font-size: 12px; max-height: 260px; }
 .loadingRow { display: flex; align-items: center; gap: 14px; }
 .spinner {

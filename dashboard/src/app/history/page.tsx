@@ -1,52 +1,82 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { Suspense, useMemo, useState, type ReactNode } from "react";
 import { AuthGate, UserBadge } from "@/components/AuthGate";
 import { Card, SectionHeader } from "@/components/Card";
+import { DailyTrendChart } from "@/components/DailyTrendChart";
 import { KpiTile } from "@/components/KpiTile";
 import { TelemetryTable } from "@/components/TelemetryTable";
 import { TrendChart } from "@/components/TrendChart";
 import { summarizeTelemetry } from "@/lib/bp";
 import { downloadCsv, telemetryToCsv } from "@/lib/csv";
-import { formatInteger, pluralize } from "@/lib/format";
+import { formatInteger, formatNumber, pluralize } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
 import { useTelemetry } from "@/lib/telemetry";
+import { useHistoryUrl } from "@/lib/useHistoryUrl";
+import {
+  computeDailyTrends,
+  computeTrendStats,
+  filterByDateRange,
+  type DateRange
+} from "@/lib/trends";
 import type { DashboardMode } from "@/lib/types";
 
 export default function HistoryPage() {
+  const { t } = useI18n();
   return (
-    <AuthGate title="Sign in to review historical windows">
-      {(session) => <HistoryView sessionNode={<UserBadge session={session} />} />}
+    <AuthGate title={t("history.authTitle")}>
+      {(session) => (
+        <Suspense fallback={<div className="pageStack"><SectionHeader eyebrow={t("history.eyebrow")} title={t("history.title")} /></div>}>
+          <HistoryView sessionNode={<UserBadge session={session} />} />
+        </Suspense>
+      )}
     </AuthGate>
   );
 }
 
 function HistoryView({ sessionNode }: { sessionNode: ReactNode }) {
-  const [device, setDevice] = useState("");
+  const { t, messages: m } = useI18n();
+  const { device, range, threshold, replaceParams } = useHistoryUrl();
   const [mode, setMode] = useState<DashboardMode>("user");
-  const [threshold, setThreshold] = useState(140);
   const { rows, status, devices } = useTelemetry({ enabled: true, device, limit: 500 });
-  const visibleRows = mode === "user" ? rows.slice(0, 100) : rows;
-  const summary = useMemo(() => summarizeTelemetry(rows, threshold), [rows, threshold]);
+  const filteredRows = useMemo(() => filterByDateRange(rows, range), [rows, range]);
+  const visibleRows = mode === "user" ? filteredRows.slice(0, 100) : filteredRows;
+  const summary = useMemo(() => summarizeTelemetry(filteredRows, threshold), [filteredRows, threshold]);
+  const trendStats = useMemo(() => computeTrendStats(filteredRows, threshold), [filteredRows, threshold]);
+  const dailyTrends = useMemo(() => computeDailyTrends(filteredRows), [filteredRows]);
+
+  const rangeLabels: Record<DateRange, string> = {
+    "24h": t("history.range24h"),
+    "7d": t("history.range7d"),
+    "30d": t("history.range30d"),
+    all: t("history.rangeAll")
+  };
 
   return (
     <div className="pageStack">
-      <SectionHeader eyebrow="Historical analytics" title="Telemetry history">
+      <SectionHeader eyebrow={t("history.eyebrow")} title={t("history.title")}>
         {sessionNode}
       </SectionHeader>
 
       <div className="fourCol">
-        <KpiTile label="Loaded windows" value={summary.count} meta={status || pluralize(summary.deviceCount, "device")} />
-        <KpiTile label="Mean SBP" value={formatInteger(summary.avgSbp)} unit="mmHg" />
-        <KpiTile label="Mean DBP" value={formatInteger(summary.avgDbp)} unit="mmHg" />
-        <KpiTile label="SBP threshold hits" value={summary.highCount} tone={summary.highCount ? "bad" : "good"} />
+        <KpiTile label={t("history.windowsInView")} value={trendStats.count} meta={status || pluralize(summary.deviceCount, "device")} />
+        <KpiTile label={t("history.meanSbp")} value={formatInteger(trendStats.avgSbp)} unit={t("common.mmHg")} meta={`σ ${formatNumber(trendStats.stdSbp, 1)}`} />
+        <KpiTile label={t("history.meanDbp")} value={formatInteger(trendStats.avgDbp)} unit={t("common.mmHg")} meta={`σ ${formatNumber(trendStats.stdDbp, 1)}`} />
+        <KpiTile label={t("history.thresholdHits")} value={trendStats.highSbpCount} tone={trendStats.highSbpCount ? "bad" : "good"} />
+      </div>
+
+      <div className="fourCol">
+        <KpiTile label={t("history.meanMap")} value={formatInteger(trendStats.avgMap)} unit={t("common.mmHg")} meta={t("history.mapMeta")} />
+        <KpiTile label={t("history.pulsePressure")} value={formatInteger(trendStats.avgPulsePressure)} unit={t("common.mmHg")} meta={t("history.ppMeta")} />
+        <KpiTile label={t("history.sbpRange")} value={`${formatInteger(trendStats.minSbp)}–${formatInteger(trendStats.maxSbp)}`} unit={t("common.mmHg")} />
+        <KpiTile label={t("history.elevated")} value={trendStats.elevatedCount} tone={trendStats.elevatedCount ? "warn" : "good"} meta={t("history.elevatedMeta")} />
       </div>
 
       <Card>
         <div className="sectionHeader">
           <div>
-            <div className="cardTitle">Filters and export</div>
-            <p className="muted">Use this page during the demo to show that predictions are stored and auditable.</p>
+            <div className="cardTitle">{t("history.filtersExport")}</div>
+            <p className="muted">{t("history.filtersBody")}</p>
           </div>
           <div className="rowActions">
             <button
@@ -55,23 +85,27 @@ function HistoryView({ sessionNode }: { sessionNode: ReactNode }) {
               onClick={() => downloadCsv("telemetry_windows.csv", telemetryToCsv(visibleRows))}
               disabled={visibleRows.length === 0}
             >
-              Export CSV
+              {t("common.exportCsv")}
             </button>
             <span className="seg" aria-label="Dashboard mode">
               <button type="button" className={mode === "user" ? "active" : ""} onClick={() => setMode("user")}>
-                User mode
+                {t("common.userMode")}
               </button>
               <button type="button" className={mode === "detailed" ? "active" : ""} onClick={() => setMode("detailed")}>
-                Detailed
+                {t("common.detailedMode")}
               </button>
             </span>
           </div>
         </div>
-        <div className="threeCol">
+        <div className="fourCol">
           <div className="fieldStack">
-            <label htmlFor="device">Device filter</label>
-            <select id="device" value={device} onChange={(event) => setDevice(event.target.value)}>
-              <option value="">All devices</option>
+            <label htmlFor="device">{t("history.deviceFilter")}</label>
+            <select
+              id="device"
+              value={device}
+              onChange={(event) => replaceParams({ device: event.target.value })}
+            >
+              <option value="">{t("history.allDevices")}</option>
               {devices.map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -80,32 +114,53 @@ function HistoryView({ sessionNode }: { sessionNode: ReactNode }) {
             </select>
           </div>
           <div className="fieldStack">
-            <label htmlFor="threshold">SBP threshold</label>
+            <label htmlFor="range">{t("history.dateRange")}</label>
+            <select
+              id="range"
+              value={range}
+              onChange={(event) => replaceParams({ range: event.target.value as DateRange })}
+            >
+              <option value="24h">{m.history.range24h}</option>
+              <option value="7d">{m.history.range7d}</option>
+              <option value="30d">{m.history.range30d}</option>
+              <option value="all">{m.history.rangeAll}</option>
+            </select>
+          </div>
+          <div className="fieldStack">
+            <label htmlFor="threshold">{t("history.sbpThreshold")}</label>
             <input
               id="threshold"
               type="number"
               className="input"
               value={threshold}
-              onChange={(event) => setThreshold(Number(event.target.value))}
+              onChange={(event) => replaceParams({ threshold: Number(event.target.value) })}
             />
           </div>
           <div className="fieldStack">
-            <label>Current view</label>
-            <span className="badge">{mode === "user" ? "Last 100 windows" : "Last 500 windows"}</span>
+            <label>{t("history.currentView")}</label>
+            <span className="badge">
+              {rangeLabels[range]} · {visibleRows.length} rows
+            </span>
           </div>
         </div>
       </Card>
 
       <Card>
-        <div className="cardTitle">Trend analytics</div>
+        <div className="cardTitle">{t("history.sessionTrend")}</div>
+        <p className="muted">{t("history.sessionTrendBody")}</p>
         <TrendChart rows={visibleRows} threshold={threshold} />
       </Card>
 
       <Card>
-        <div className="cardTitle">Stored telemetry windows</div>
+        <div className="cardTitle">{t("history.dailyAverages")}</div>
+        <p className="muted">{t("history.dailyBody")}</p>
+        <DailyTrendChart points={dailyTrends} />
+      </Card>
+
+      <Card>
+        <div className="cardTitle">{t("history.storedWindows")}</div>
         <TelemetryTable rows={visibleRows} mode={mode} />
       </Card>
     </div>
   );
 }
-

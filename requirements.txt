@@ -8,7 +8,5 @@ pydantic
 neurokit2
 pandas
 wfdb
-dash
-plotly
 requests
 websockets

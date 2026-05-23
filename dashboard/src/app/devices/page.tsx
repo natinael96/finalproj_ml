@@ -1,22 +1,26 @@
 "use client";
 
-import { useMemo } from "react";
-import type { ReactNode } from "react";
+import Link from "next/link";
+import { useMemo, type ReactNode } from "react";
 import { AuthGate, UserBadge } from "@/components/AuthGate";
 import { Card, SectionHeader } from "@/components/Card";
 import { KpiTile } from "@/components/KpiTile";
+import { TelemetryEmptyState } from "@/components/TelemetryEmptyState";
 import { formatInteger, formatTime } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
 import { useTelemetry } from "@/lib/telemetry";
 
 export default function DevicesPage() {
+  const { t } = useI18n();
   return (
-    <AuthGate title="Sign in to inspect devices and sessions">
+    <AuthGate title={t("devices.authTitle")}>
       {(session) => <DevicesView userId={session.user.id} sessionNode={<UserBadge session={session} />} />}
     </AuthGate>
   );
 }
 
 function DevicesView({ userId, sessionNode }: { userId: string; sessionNode: ReactNode }) {
+  const { t } = useI18n();
   const { rows, status } = useTelemetry({ enabled: true, limit: 500 });
   const devices = useMemo(() => {
     const map = new Map<string, { count: number; lastSeen: string; avgSbp: number | null; avgDbp: number | null }>();
@@ -36,44 +40,39 @@ function DevicesView({ userId, sessionNode }: { userId: string; sessionNode: Rea
 
   return (
     <div className="pageStack">
-      <SectionHeader eyebrow="Operations" title="Devices and sessions">
+      <SectionHeader eyebrow={t("devices.eyebrow")} title={t("devices.title")}>
         {sessionNode}
       </SectionHeader>
 
       <div className="threeCol">
-        <KpiTile label="Known devices" value={devices.length} meta={status || "From telemetry_windows"} />
-        <KpiTile label="Total windows" value={rows.length} />
-        <KpiTile label="Current user" value={userId.slice(0, 8)} meta="Use this id in ingest query params" />
+        <KpiTile label={t("devices.knownDevices")} value={devices.length} meta={status || t("devices.fromTelemetry")} />
+        <KpiTile label={t("devices.totalWindows")} value={rows.length} />
+        <KpiTile label={t("devices.currentUser")} value={userId.slice(0, 8)} meta={t("devices.userMeta")} />
       </div>
 
       <Card className="callout">
-        <div className="cardTitle">Live setup command pattern</div>
-        <p className="muted">
-          For replay or ESP32 ingestion, the backend needs the same <code>user_id</code> as the dashboard user so
-          Supabase RLS can show rows here.
-        </p>
+        <div className="cardTitle">{t("devices.setupPattern")}</div>
+        <p className="muted">{t("devices.setupBody")}</p>
         <pre className="preBlock">
 {`ws://<PC_LAN_IP>:8000/ws/esp32?device_id=esp32-01&fs_hz=100&window_s=8&user_id=${userId}`}
         </pre>
       </Card>
 
       <Card>
-        <div className="cardTitle">Device registry from telemetry</div>
+        <div className="cardTitle">{t("devices.registry")}</div>
         {devices.length === 0 ? (
-          <div className="emptyState">
-            <strong>No devices observed.</strong>
-            <span>Stream at least one telemetry window to populate this operational view.</span>
-          </div>
+          <TelemetryEmptyState />
         ) : (
           <div className="tableWrap">
             <table>
               <thead>
                 <tr>
-                  <th>device</th>
-                  <th>windows</th>
-                  <th>last seen</th>
-                  <th>mean SBP</th>
-                  <th>mean DBP</th>
+                  <th>{t("table.device")}</th>
+                  <th>{t("devices.windows")}</th>
+                  <th>{t("devices.lastSeen")}</th>
+                  <th>{t("devices.meanSbp")}</th>
+                  <th>{t("devices.meanDbp")}</th>
+                  <th>{t("history.sessionTrend")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -84,6 +83,11 @@ function DevicesView({ userId, sessionNode }: { userId: string; sessionNode: Rea
                     <td className="nowrap">{formatTime(stats.lastSeen)}</td>
                     <td className="num">{formatInteger(stats.avgSbp)}</td>
                     <td className="num">{formatInteger(stats.avgDbp)}</td>
+                    <td>
+                      <Link href={`/history?device=${encodeURIComponent(device)}`} className="badge">
+                        {t("devices.viewTrends")}
+                      </Link>
+                    </td>
                   </tr>
                 ))}
               </tbody>

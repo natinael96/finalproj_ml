@@ -1,17 +1,7 @@
-import { Card } from "@/components/Card";
+"use client";
+
+import { PageSkeleton } from "@/components/PageSkeleton";
 
 export default function Loading() {
-  return (
-    <div className="pageStack">
-      <Card>
-        <div className="loadingRow">
-          <span className="spinner" />
-          <div>
-            <div className="cardTitle">Preparing dashboard</div>
-            <p className="muted">Loading the route and dashboard state...</p>
-          </div>
-        </div>
-      </Card>
-    </div>
-  );
+  return <PageSkeleton variant="page" />;
 }

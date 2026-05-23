@@ -6,11 +6,13 @@ import { KpiTile } from "@/components/KpiTile";
 import { BP_API_URL, apiHeaders } from "@/lib/env";
 import { parseFeatureRowsFromCsv } from "@/lib/csv";
 import { formatNumber } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
 import type { ApiHealth, PredictionResponse } from "@/lib/types";
 
 type LabState = "idle" | "loading" | "success" | "error";
 
 export default function LabPage() {
+  const { t } = useI18n();
   const [apiUrl, setApiUrl] = useState(BP_API_URL);
   const [featuresText, setFeaturesText] = useState("[0.2, 70, 0.03, 0.1, 1.2, 0.4, 0.18, 0.08, 0.02, 0.07]");
   const [csvText, setCsvText] = useState("features\n\"[0.2,70,0.03,0.1,1.2,0.4,0.18,0.08,0.02,0.07]\"");
@@ -78,15 +80,20 @@ export default function LabPage() {
 
   return (
     <div className="pageStack">
-      <SectionHeader eyebrow="Technical lab" title="API and CSV prediction workspace" />
+      <SectionHeader eyebrow={t("lab.eyebrow")} title={t("lab.title")} />
 
       <div className="threeCol">
-        <KpiTile label="API base URL" value="FastAPI" meta={apiUrl} />
-        <KpiTile label="Health" value={health?.model_loaded ? "Loaded" : "Unknown"} meta="GET /health" tone={health?.model_loaded ? "good" : "neutral"} />
+        <KpiTile label={t("lab.apiBase")} value="FastAPI" meta={apiUrl} />
         <KpiTile
-          label="Last status"
+          label={t("lab.health")}
+          value={health?.model_loaded ? t("lab.loaded") : t("lab.unknown")}
+          meta={t("lab.healthMeta")}
+          tone={health?.model_loaded ? "good" : "neutral"}
+        />
+        <KpiTile
+          label={t("lab.lastStatus")}
           value={labState}
-          meta={status || "Run a lab action"}
+          meta={status || t("lab.runAction")}
           tone={labState === "success" ? "good" : labState === "error" ? "bad" : labState === "loading" ? "warn" : "neutral"}
         />
       </div>
@@ -94,12 +101,14 @@ export default function LabPage() {
       <Card>
         <div className="threeCol">
           <div className="fieldStack span2">
-            <label htmlFor="apiUrl">FastAPI URL</label>
+            <label htmlFor="apiUrl">{t("lab.fastApiUrl")}</label>
             <input id="apiUrl" className="input" value={apiUrl} onChange={(event) => setApiUrl(event.target.value)} />
           </div>
           <div className="fieldStack">
-            <label>Health endpoint</label>
-            <button type="button" className="btn btnPrimary" onClick={checkHealth} disabled={labState === "loading"}>Check /health</button>
+            <label>{t("lab.healthEndpoint")}</label>
+            <button type="button" className="btn btnPrimary" onClick={checkHealth} disabled={labState === "loading"}>
+              {t("lab.checkHealth")}
+            </button>
           </div>
         </div>
         {health ? <pre className="preBlock">{JSON.stringify(health, null, 2)}</pre> : null}
@@ -107,14 +116,16 @@ export default function LabPage() {
 
       <div className="twoCol">
         <Card>
-          <div className="cardTitle">Single feature-vector prediction</div>
-          <p className="muted">Paste a feature vector aligned with the deployed model schema, then call POST /predict.</p>
+          <div className="cardTitle">{t("lab.singlePredict")}</div>
+          <p className="muted">{t("lab.singleBody")}</p>
           <textarea className="textarea" value={featuresText} onChange={(event) => setFeaturesText(event.target.value)} />
           <div className="rowActions">
-            <button type="button" className="btn btnPrimary" onClick={predictOne} disabled={labState === "loading"}>Predict one</button>
+            <button type="button" className="btn btnPrimary" onClick={predictOne} disabled={labState === "loading"}>
+              {t("lab.predictOne")}
+            </button>
             {prediction ? (
               <span className="badge">
-                {formatNumber(prediction.sbp)} / {formatNumber(prediction.dbp)} mmHg
+                {formatNumber(prediction.sbp)} / {formatNumber(prediction.dbp)} {t("common.mmHg")}
               </span>
             ) : null}
           </div>
@@ -122,12 +133,14 @@ export default function LabPage() {
         </Card>
 
         <Card>
-          <div className="cardTitle">CSV batch prediction</div>
-          <p className="muted">Supports the Dash app formats: a JSON features column or numeric f0,f1,... columns.</p>
+          <div className="cardTitle">{t("lab.csvBatch")}</div>
+          <p className="muted">{t("lab.csvBody")}</p>
           <textarea className="textarea" value={csvText} onChange={(event) => setCsvText(event.target.value)} />
           <div className="rowActions">
-            <button type="button" className="btn btnPrimary" onClick={predictBatch} disabled={labState === "loading"}>Predict batch</button>
-            {batch ? <span className="badge">{batch.sbp.length} row(s)</span> : null}
+            <button type="button" className="btn btnPrimary" onClick={predictBatch} disabled={labState === "loading"}>
+              {t("lab.predictBatch")}
+            </button>
+            {batch ? <span className="badge">{t("lab.rows", { count: batch.sbp.length })}</span> : null}
           </div>
           {batch ? <pre className="preBlock">{JSON.stringify(batch, null, 2)}</pre> : null}
         </Card>

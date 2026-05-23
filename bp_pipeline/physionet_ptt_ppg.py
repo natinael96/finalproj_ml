@@ -21,7 +21,7 @@ class PhysioNetPttConfig:
     """
 
     window_s: float = 8.0
-    max_windows_per_record: int = 30
+    max_windows_per_record: int = 40
     live_target_fs: int = 250
     live_ppg_effective_fs: int = 50
     simulate_esp32_ppg_hold: bool = False

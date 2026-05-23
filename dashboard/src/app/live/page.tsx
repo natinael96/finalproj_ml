@@ -1,7 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { AuthGate, UserBadge } from "@/components/AuthGate";
 import { Card, SectionHeader } from "@/components/Card";
 import { AlertBadge, KpiTile } from "@/components/KpiTile";
@@ -9,7 +8,9 @@ import { TelemetryTable } from "@/components/TelemetryTable";
 import { TrendChart } from "@/components/TrendChart";
 import { classifyBp, summarizeTelemetry } from "@/lib/bp";
 import { formatInteger, formatShortTime } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
 import { useTelemetry } from "@/lib/telemetry";
+import { computeTrendStats } from "@/lib/trends";
 import type { DashboardMode } from "@/lib/types";
 
 function toneForConnection(state: string): "good" | "warn" | "bad" | "neutral" {
@@ -20,60 +21,74 @@ function toneForConnection(state: string): "good" | "warn" | "bad" | "neutral" {
 }
 
 export default function LivePage() {
+  const { t } = useI18n();
   return (
-    <AuthGate title="Sign in for the live BP monitor">
+    <AuthGate title={t("live.authTitle")}>
       {(session) => <LiveMonitor sessionId={session.user.id} sessionNode={<UserBadge session={session} />} />}
     </AuthGate>
   );
 }
 
 function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNode: ReactNode }) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<DashboardMode>("user");
   const [threshold, setThreshold] = useState(140);
   const { rows, status, telemetryStatus } = useTelemetry({ enabled: true, limit: 80, realtime: true, websocket: true });
   const visibleRows = mode === "user" ? rows.slice(0, 20) : rows;
   const summary = useMemo(() => summarizeTelemetry(rows, threshold), [rows, threshold]);
-  const band = classifyBp(summary.latest?.sbp_pred, summary.latest?.dbp_pred);
+  const trendStats = useMemo(() => computeTrendStats(rows, threshold), [rows, threshold]);
+  const band = classifyBp(summary.latest?.sbp_pred, summary.latest?.dbp_pred, {
+    waiting: t("bp.waiting"),
+    high: t("bp.high"),
+    elevated: t("bp.elevated"),
+    inRange: t("bp.inRange"),
+    waitingDetail: t("bp.waitingDetail"),
+    highDetail: t("bp.highDetail"),
+    elevatedDetail: t("bp.elevatedDetail"),
+    inRangeDetail: t("bp.inRangeDetail")
+  });
   const liveTone = summary.count > 0 ? "good" : toneForConnection(telemetryStatus.websocket);
-  const liveLabel = summary.count > 0 ? "Receiving windows" : telemetryStatus.message;
+  const liveLabel = summary.count > 0 ? t("live.receiving") : telemetryStatus.message;
 
   return (
     <div className="pageStack">
-      <SectionHeader eyebrow="Live monitor" title="Streaming BP windows">
+      <SectionHeader eyebrow={t("live.eyebrow")} title={t("live.title")}>
         {sessionNode}
       </SectionHeader>
 
       <div className="hero">
         <div className="heroCopy">
           <div>
-            <div className="eyebrow">Current inference</div>
+            <div className="eyebrow">{t("live.currentInference")}</div>
             <div className="heroStat" role="status" aria-live="polite">
               {formatInteger(summary.latest?.sbp_pred)}
               <span style={{ opacity: 0.42 }}> / </span>
               {formatInteger(summary.latest?.dbp_pred)}
             </div>
             <p className="muted">
-              Latest SBP/DBP estimate from the buffered 8-second telemetry pipeline. Treat values as prototype
-              predictions and use repeated windows for trend demonstrations.
+              {t("live.heroBody", {
+                map: formatInteger(summary.latestMap),
+                pp: formatInteger(summary.latestPulsePressure)
+              })}
             </p>
           </div>
           <div className="heroStrip">
             <AlertBadge tone={band.tone}>{band.label}</AlertBadge>
             <AlertBadge tone={liveTone}>{liveLabel}</AlertBadge>
             <AlertBadge tone={summary.latest?.synthetic ? "warn" : summary.latest?.synthetic === false ? "good" : "neutral"}>
-              {summary.latest?.synthetic ? "Synthetic fallback" : summary.latest?.synthetic === false ? "Sensor data" : "Source unknown"}
+              {summary.latest?.synthetic ? t("live.syntheticFallback") : summary.latest?.synthetic === false ? t("live.sensorData") : t("live.sourceUnknown")}
             </AlertBadge>
-            <span className="badge">device {summary.latest?.device_id ?? "-"}</span>
-            <span className="badge">time {formatShortTime(summary.latest?.created_at)}</span>
+            <span className="badge">{t("common.device")} {summary.latest?.device_id ?? "-"}</span>
+            <span className="badge">{t("common.time")} {formatShortTime(summary.latest?.created_at)}</span>
             <span className="badge">user {sessionId.slice(0, 8)}...</span>
           </div>
         </div>
         <div className="heroPanel">
-          <KpiTile label="Windows loaded" value={summary.count} meta="Supabase history plus live socket inserts" />
-          <KpiTile label="SBP alerts" value={summary.highCount} unit="windows" tone={summary.highCount ? "bad" : "good"} />
+          <KpiTile label={t("live.windowsLoaded")} value={summary.count} meta={t("live.windowsMeta")} />
+          <KpiTile label={t("live.sbpAlerts")} value={summary.highCount} unit="windows" tone={summary.highCount ? "bad" : "good"} />
           <Card>
             <div className="fieldStack">
-              <label htmlFor="threshold">SBP alert threshold</label>
+              <label htmlFor="threshold">{t("live.alertThreshold")}</label>
               <input
                 id="threshold"
                 className="input"
@@ -83,49 +98,39 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
                 value={threshold}
                 onChange={(event) => setThreshold(Number(event.target.value))}
               />
-              <p className="muted">Used for dashboard highlighting only; it does not change model predictions.</p>
+              <p className="muted">{t("live.thresholdNote")}</p>
             </div>
           </Card>
         </div>
       </div>
 
       <div className="kpiGrid">
-        <KpiTile label="Average SBP" value={formatInteger(summary.avgSbp)} unit="mmHg" />
-        <KpiTile label="Average DBP" value={formatInteger(summary.avgDbp)} unit="mmHg" />
+        <KpiTile label={t("live.avgSbp")} value={formatInteger(summary.avgSbp)} unit={t("common.mmHg")} />
+        <KpiTile label={t("live.avgDbp")} value={formatInteger(summary.avgDbp)} unit={t("common.mmHg")} />
+        <KpiTile label={t("live.sessionMap")} value={formatInteger(trendStats.avgMap)} unit={t("common.mmHg")} />
         <KpiTile
-          label="Active devices"
+          label={t("live.activeDevices")}
           value={summary.deviceCount}
-          meta={summary.syntheticCount ? `${summary.syntheticCount} synthetic fallback window(s)` : status || telemetryStatus.message || band.detail}
+          meta={
+            summary.syntheticCount
+              ? t("live.syntheticWindows", { count: summary.syntheticCount })
+              : status || telemetryStatus.message || band.detail
+          }
           tone={summary.syntheticCount ? "warn" : band.tone}
         />
       </div>
 
       <div className="threeCol">
-        <KpiTile
-          label="Database load"
-          value={telemetryStatus.database}
-          meta="Supabase telemetry_windows query"
-          tone={toneForConnection(telemetryStatus.database)}
-        />
-        <KpiTile
-          label="Realtime channel"
-          value={telemetryStatus.realtime}
-          meta="Supabase INSERT subscription"
-          tone={toneForConnection(telemetryStatus.realtime)}
-        />
-        <KpiTile
-          label="FastAPI socket"
-          value={telemetryStatus.websocket}
-          meta="ws/dashboard broadcast path"
-          tone={toneForConnection(telemetryStatus.websocket)}
-        />
+        <KpiTile label={t("live.dbLoad")} value={telemetryStatus.database} meta={t("live.dbMeta")} tone={toneForConnection(telemetryStatus.database)} />
+        <KpiTile label={t("live.realtime")} value={telemetryStatus.realtime} meta={t("live.realtimeMeta")} tone={toneForConnection(telemetryStatus.realtime)} />
+        <KpiTile label={t("live.fastApiSocket")} value={telemetryStatus.websocket} meta={t("live.socketMeta")} tone={toneForConnection(telemetryStatus.websocket)} />
       </div>
 
       <Card>
         <div className="sectionHeader">
           <div>
-            <div className="cardTitle">Live trend</div>
-            <p className="muted">Recent SBP/DBP estimates, newest windows appended as they arrive.</p>
+            <div className="cardTitle">{t("live.liveTrend")}</div>
+            <p className="muted">{t("live.liveTrendBody")}</p>
           </div>
           <span className={`pill tone-${liveTone}`}><span className={`dot dot-${liveTone}`} /> {liveLabel}</span>
         </div>
@@ -133,19 +138,19 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
       </Card>
 
       <Card className="callout">
-        <div className="cardTitle">Live hardware checklist</div>
+        <div className="cardTitle">{t("live.hardwareChecklist")}</div>
         <div className="threeCol">
           <div className="fieldStack">
-            <label>1. FastAPI</label>
-            <p className="muted">Run <code>uvicorn bp_api.main:app --host 0.0.0.0 --port 8000 --reload</code>.</p>
+            <label>{t("live.hw1")}</label>
+            <p className="muted">{t("live.hw1Body")}</p>
           </div>
           <div className="fieldStack">
-            <label>2. ESP32 URL</label>
-            <p className="muted">Use the laptop LAN IP, not <code>127.0.0.1</code>, with <code>/ws/esp32</code>.</p>
+            <label>{t("live.hw2")}</label>
+            <p className="muted">{t("live.hw2Body")}</p>
           </div>
           <div className="fieldStack">
-            <label>3. First result</label>
-            <p className="muted">Expect the first BP window after about 8 seconds of stable ECG/PPG samples.</p>
+            <label>{t("live.hw3")}</label>
+            <p className="muted">{t("live.hw3Body")}</p>
           </div>
         </div>
       </Card>
@@ -153,15 +158,15 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
       <Card>
         <div className="sectionHeader">
           <div>
-            <div className="cardTitle">Recent feed</div>
-            <p className="muted">{mode === "user" ? "Curated latest 20 windows." : "Detailed latest 80 windows."}</p>
+            <div className="cardTitle">{t("live.recentFeed")}</div>
+            <p className="muted">{mode === "user" ? t("live.curated20") : t("live.detailed80")}</p>
           </div>
           <span className="seg" aria-label="Dashboard mode">
             <button type="button" className={mode === "user" ? "active" : ""} onClick={() => setMode("user")}>
-              User mode
+              {t("common.userMode")}
             </button>
             <button type="button" className={mode === "detailed" ? "active" : ""} onClick={() => setMode("detailed")}>
-              Detailed
+              {t("common.detailedMode")}
             </button>
           </span>
         </div>

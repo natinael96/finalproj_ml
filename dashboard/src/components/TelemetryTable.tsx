@@ -1,5 +1,9 @@
+"use client";
+
 import { formatNumber, formatTime } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import type { DashboardMode, TelemetryWindow } from "@/lib/types";
+import { TelemetryEmptyState } from "./TelemetryEmptyState";
 
 export function TelemetryTable({
   rows,
@@ -8,13 +12,15 @@ export function TelemetryTable({
   rows: TelemetryWindow[];
   mode?: DashboardMode;
 }) {
+  const t = useT();
+
   if (rows.length === 0) {
-    return (
-      <div className="emptyState">
-        <strong>No telemetry windows yet.</strong>
-        <span>Start FastAPI and stream ESP32 or replay data with the signed-in user id.</span>
-      </div>
-    );
+    return <TelemetryEmptyState />;
+  }
+
+  function sourceLabel(row: TelemetryWindow) {
+    if (row.synthetic == null) return t("common.unknown");
+    return row.synthetic ? t("common.synthetic") : t("common.sensor");
   }
 
   return (
@@ -22,14 +28,14 @@ export function TelemetryTable({
       <table>
         <thead>
           <tr>
-            <th>time</th>
-            <th>device</th>
-            <th>SBP</th>
-            <th>DBP</th>
-            <th>source</th>
-            <th>σ SBP</th>
-            <th>σ DBP</th>
-            {mode === "detailed" ? <th>id</th> : null}
+            <th>{t("table.time")}</th>
+            <th>{t("table.device")}</th>
+            <th>{t("table.sbp")}</th>
+            <th>{t("table.dbp")}</th>
+            <th>{t("table.source")}</th>
+            <th>{t("table.sigmaSbp")}</th>
+            <th>{t("table.sigmaDbp")}</th>
+            {mode === "detailed" ? <th>{t("table.id")}</th> : null}
           </tr>
         </thead>
         <tbody>
@@ -39,7 +45,7 @@ export function TelemetryTable({
               <td>{row.device_id}</td>
               <td className="num">{formatNumber(row.sbp_pred)}</td>
               <td className="num">{formatNumber(row.dbp_pred)}</td>
-              <td>{row.synthetic == null ? "unknown" : row.synthetic ? "synthetic" : "sensor"}</td>
+              <td>{sourceLabel(row)}</td>
               <td className="num">{formatNumber(row.sbp_std, 2)}</td>
               <td className="num">{formatNumber(row.dbp_std, 2)}</td>
               {mode === "detailed" ? <td className="num">{row.id}</td> : null}

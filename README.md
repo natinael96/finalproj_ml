@@ -57,7 +57,7 @@ After downloading with your terminal (e.g. `wget -r -N -c -np ...`), point train
 For a model artifact that is closest to the live ESP32 setup, use the ESP32-compatible PhysioNet mode. It trains on the generic live feature schema, uses one PPG channel, resamples windows to a 250 Hz stream, and simulates the MAX30100's 50 Hz PPG value being held between updates:
 
 ```bash
-python -m bp_pipeline.train --physionet-ptt-dir path/to/pulse-transit-time-ppg/1.1.0 --out artifacts_live --top-k 18 --esp32-compatible --verbose
+python -m bp_pipeline.train --physionet-ptt-dir path/to/pulse-transit-time-ppg/1.1.0 --out artifacts_live --top-k 40 --max-windows-per-record 40 --esp32-compatible --optuna-trials 0 --verbose
 ```
 
 Then point the API to the live-compatible artifact:
@@ -77,7 +77,7 @@ python -m bp_pipeline.train --physionet-ptt-dir path/to/pulse-transit-time-ppg/1
 For the strongest final-year methodology, collect live ESP32 windows with matching cuff SBP/DBP labels and train with the generic CSV format:
 
 ```bash
-python -m bp_pipeline.train --data data/esp32_labeled_windows.csv --out artifacts_esp32 --top-k 18 --verbose
+python -m bp_pipeline.train --data data/esp32_labeled_windows.csv --out artifacts_esp32 --top-k 40 --verbose
 ```
 
 That path uses the same `DEFAULT_FEATURES` as `/ws/esp32`, so it avoids the PhysioNet-vs-hardware feature mismatch.
@@ -124,30 +124,9 @@ set BP_MODEL_PATH=artifacts/model.joblib
 - The motion removal is intentionally simple for MVP; you can swap in NLMS later.
 - PTT extraction is implemented from detected ECG R-peaks and PPG peaks; you’ll likely want more robust peak logic per your paper.
 
-## Dashboard
+## Dashboard (Next.js)
 
-Run the dashboard:
-
-```bash
-python -m bp_dashboard.app
-```
-
-Then open the local URL it prints (usually `http://127.0.0.1:8050`).
-
-Dashboard CSV upload options:
-
-- **Actual mode**: CSV with columns `sbp`, `dbp` (optional `t`)
-- **Predict mode**: CSV with either:
-  - `features` column containing a JSON array per row, or
-  - numeric columns `f0,f1,f2,...`
-
-To point the dashboard to a different API:
-
-- Set `BP_API_URL` (default `http://127.0.0.1:8000`)
-
-## Next.js Dashboard (Supabase Auth + Live/History)
-
-There is also a Next.js dashboard under `dashboard/` that reads from Supabase table `telemetry_windows` (with RLS).
+The dashboard lives under `dashboard/` and reads from Supabase table `telemetry_windows` (with RLS). It includes live monitoring, historical trends, device operations, model methodology, and an API lab for CSV batch prediction.
 
 Setup:
 

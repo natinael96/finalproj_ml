@@ -12,7 +12,6 @@ from functools import lru_cache
 from threading import Lock
 from typing import Dict, List, Optional, Tuple
 
-import joblib
 import numpy as np
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
@@ -20,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from bp_pipeline.features import DEFAULT_FEATURES, FeatureSchema, extract_features_from_signals
+from bp_pipeline.inference import ArtifactBundle, load_artifact_bundle
 from bp_pipeline.preprocess import SamplingRates
 
 MAX_BATCH_ROWS = 256
@@ -89,7 +89,7 @@ class PredictResponse(BaseModel):
 
 
 @lru_cache(maxsize=1)
-def load_artifact():
+def load_artifact() -> ArtifactBundle:
     path = _model_artifact_path()
     if not path.is_file():
         raise RuntimeError(
@@ -98,45 +98,9 @@ def load_artifact():
             "Or create a smoke-test model: python scripts/build_demo_model.py"
         )
     try:
-        bundle = joblib.load(path)
+        return load_artifact_bundle(path)
     except Exception as e:
         raise RuntimeError(f"Failed to load model artifact at {path}: {e}") from e
-
-    model = bundle["model"]
-    schema = bundle.get("schema", {})
-    names = list(schema.get("names", []))
-    # Build per-feature median map for NaN/Inf imputation at inference time
-    med_map: Dict[str, float] = {}
-    try:
-        full_schema = bundle.get("full_schema", {})
-        full_names = list(full_schema.get("names", []))
-        med_full = bundle.get("medians_full_schema", None)
-        if isinstance(med_full, (list, tuple)) and len(full_names) == len(med_full):
-            for n, m in zip(full_names, med_full):
-                try:
-                    med_map[str(n)] = float(m)
-                except Exception:
-                    continue
-    except Exception:
-        pass
-    return model, names, med_map
-
-
-def _impute_non_finite(x: np.ndarray, names: List[str], med_map: Dict[str, float]) -> np.ndarray:
-    """
-    Replace NaN/Inf using medians saved during training.
-    Falls back to 0.0 if no median is available.
-    """
-    x = np.asarray(x, dtype=float).ravel()
-    if x.size != len(names):
-        return x
-    out = x.copy()
-    bad = ~np.isfinite(out)
-    if not bad.any():
-        return out
-    for i in np.flatnonzero(bad):
-        out[i] = float(med_map.get(names[i], 0.0))
-    return out
 
 
 def _missing_live_feature_names(names: List[str]) -> List[str]:
@@ -238,6 +202,28 @@ def supabase_rest_config() -> Optional[Dict[str, str]]:
     if not url or not key:
         return None
     return {"url": url, "key": key}
+
+
+def _ensemble_std(artifact: ArtifactBundle, x: np.ndarray) -> Tuple[Optional[float], Optional[float]]:
+    """Tree-ensemble spread heuristic (same logic as POST /predict)."""
+    sbp_std: Optional[float] = None
+    dbp_std: Optional[float] = None
+    try:
+        model = artifact.model
+        est0 = getattr(model, "estimators_", None)
+        if isinstance(est0, (list, tuple)) and len(est0) == 2:
+            sbp_models = getattr(est0[0], "estimators_", None)
+            dbp_models = getattr(est0[1], "estimators_", None)
+            if sbp_models and dbp_models:
+                sbp_preds = np.asarray([m.predict([x])[0] for m in sbp_models], dtype=float)
+                dbp_preds = np.asarray([m.predict([x])[0] for m in dbp_models], dtype=float)
+                if np.all(np.isfinite(sbp_preds)):
+                    sbp_std = float(np.std(sbp_preds))
+                if np.all(np.isfinite(dbp_preds)):
+                    dbp_std = float(np.std(dbp_preds))
+    except Exception:
+        pass
+    return sbp_std, dbp_std
 
 
 def _supabase_insert_telemetry(row: Dict[str, object]) -> None:
@@ -454,7 +440,7 @@ async def _process_buffered_windows(
     """
     win_n = int(round(float(window_s) * fs))
     try:
-        model, schema_names, med_map = load_artifact()
+        artifact = load_artifact()
     except RuntimeError as e:
         await ws.send_json({"ok": False, "error": str(e)})
         # Drop one window so the client does not retry the same samples forever.
@@ -469,6 +455,7 @@ async def _process_buffered_windows(
             del buf.synthetic[: min(win_n, len(buf.synthetic))]
         return None, 0
 
+    schema_names = artifact.schema_names
     schema = FeatureSchema(names=schema_names) if schema_names else DEFAULT_FEATURES
 
     wrote = 0
@@ -508,11 +495,6 @@ async def _process_buffered_windows(
             )
             break
         active_names = schema_names or used_schema.names
-        if active_names:
-            x = _impute_non_finite(x, names=active_names, med_map=med_map)
-        if not np.all(np.isfinite(x)):
-            await ws.send_json({"ok": False, "error": "non-finite feature values (NaN/Inf) after imputation"})
-            break
         if missing_live_features:
             await ws.send_json(
                 {
@@ -522,11 +504,19 @@ async def _process_buffered_windows(
                     "detail": "Some model features are not computed by the live ESP32 extractor and were imputed.",
                 }
             )
-
-        pred = model.predict([x])
-        sbp = float(pred[0][0])
-        dbp = float(pred[0][1])
-        last_pred = {"sbp": sbp, "dbp": dbp, "synthetic": synthetic_w}
+        try:
+            sbp, dbp = artifact.predict(x)
+        except ValueError:
+            await ws.send_json({"ok": False, "error": "non-finite feature values (NaN/Inf) after imputation"})
+            break
+        sbp_std, dbp_std = _ensemble_std(artifact, x)
+        last_pred = {
+            "sbp": sbp,
+            "dbp": dbp,
+            "sbp_std": sbp_std,
+            "dbp_std": dbp_std,
+            "synthetic": synthetic_w,
+        }
 
         telemetry_row = {
             "device_id": device_id,
@@ -537,6 +527,9 @@ async def _process_buffered_windows(
             "features": x.tolist(),
             "sbp_pred": sbp,
             "dbp_pred": dbp,
+            "sbp_std": sbp_std,
+            "dbp_std": dbp_std,
+            "synthetic": synthetic_w,
         }
 
         if synthetic_w:
@@ -551,7 +544,8 @@ async def _process_buffered_windows(
                 await _append_synthetic_telemetry_csv_async(csv_row)
             except Exception as e:
                 await ws.send_json({"ok": False, "error": f"synthetic_csv_write_failed: {e}"})
-        elif supabase_rest_config() and user_id:
+
+        if supabase_rest_config() and user_id:
             db_row = {
                 **telemetry_row,
                 "user_id": user_id,
@@ -575,6 +569,8 @@ async def _process_buffered_windows(
                 "ts_ms_start": int(buf.ts_ms_start),
                 "sbp_pred": sbp,
                 "dbp_pred": dbp,
+                "sbp_std": sbp_std,
+                "dbp_std": dbp_std,
                 "warning": "live_feature_schema_mismatch" if missing_live_features else None,
                 "synthetic": synthetic_w,
             }
@@ -596,7 +592,8 @@ async def _process_buffered_windows(
 @app.get("/health", dependencies=[Depends(_require_api_key)])
 def health():
     try:
-        _, names, _ = load_artifact()
+        artifact = load_artifact()
+        names = artifact.schema_names
         sb = supabase_rest_config()
         missing_live_features = _missing_live_feature_names(names)
         return {
@@ -616,41 +613,20 @@ def health():
 
 @app.post("/predict", response_model=PredictResponse, dependencies=[Depends(_require_api_key)])
 def predict(req: PredictRequest):
-    model, names, med_map = load_artifact()
+    artifact = load_artifact()
+    names = artifact.schema_names
     x = np.asarray(req.features, dtype=float).ravel()
     if x.size == 0 or x.size > MAX_FEATURES_PER_ROW:
         raise HTTPException(status_code=400, detail=f"features must contain 1..{MAX_FEATURES_PER_ROW} values")
     if names and x.size != len(names):
         raise HTTPException(status_code=400, detail=f"Expected {len(names)} features, got {x.size}")
 
-    if names:
-        x = _impute_non_finite(x, names=names, med_map=med_map)
-    if not np.all(np.isfinite(x)):
-        raise HTTPException(status_code=400, detail="Features must be finite numbers (no NaN/Inf) after imputation")
-
-    # Mean prediction
-    pred = model.predict([x])
-    sbp = float(pred[0][0])
-    dbp = float(pred[0][1])
-
-    # Simple uncertainty proxy for tree ensembles: std across estimators (if available)
-    sbp_std = None
-    dbp_std = None
     try:
-        est0 = getattr(model, "estimators_", None)
-        if isinstance(est0, (list, tuple)) and len(est0) == 2:
-            sbp_models = getattr(est0[0], "estimators_", None)
-            dbp_models = getattr(est0[1], "estimators_", None)
-            if sbp_models and dbp_models:
-                sbp_preds = np.asarray([m.predict([x])[0] for m in sbp_models], dtype=float)
-                dbp_preds = np.asarray([m.predict([x])[0] for m in dbp_models], dtype=float)
-                if np.all(np.isfinite(sbp_preds)):
-                    sbp_std = float(np.std(sbp_preds))
-                if np.all(np.isfinite(dbp_preds)):
-                    dbp_std = float(np.std(dbp_preds))
-    except Exception:
-        pass
+        sbp, dbp = artifact.predict(x)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
+    sbp_std, dbp_std = _ensemble_std(artifact, x)
     return PredictResponse(sbp=sbp, dbp=dbp, sbp_std=sbp_std, dbp_std=dbp_std, schema_names=names or None)
 
 
@@ -668,7 +644,8 @@ class PredictBatchResponse(BaseModel):
 
 @app.post("/predict_batch", response_model=PredictBatchResponse, dependencies=[Depends(_require_api_key)])
 def predict_batch(req: PredictBatchRequest):
-    model, names, med_map = load_artifact()
+    artifact = load_artifact()
+    names = artifact.schema_names
     if len(req.features) > MAX_BATCH_ROWS:
         raise HTTPException(status_code=400, detail=f"At most {MAX_BATCH_ROWS} rows are allowed per batch")
     X = np.asarray(req.features, dtype=float)
@@ -678,14 +655,10 @@ def predict_batch(req: PredictBatchRequest):
         raise HTTPException(status_code=400, detail=f"Each row must contain 1..{MAX_FEATURES_PER_ROW} features")
     if names and X.shape[1] != len(names):
         raise HTTPException(status_code=400, detail=f"Expected {len(names)} features, got {X.shape[1]}")
-    if names:
-        X2 = []
-        for row in X:
-            X2.append(_impute_non_finite(np.asarray(row), names=names, med_map=med_map))
-        X = np.vstack(X2) if X2 else X
-    if not np.all(np.isfinite(X)):
-        raise HTTPException(status_code=400, detail="Features must be finite numbers (no NaN/Inf) after imputation")
-    pred = model.predict(X)
+    try:
+        pred = artifact.predict_batch(X)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     sbp = [float(v) for v in pred[:, 0].tolist()]
     dbp = [float(v) for v in pred[:, 1].tolist()]
     return PredictBatchResponse(sbp=sbp, dbp=dbp, schema_names=names or None)

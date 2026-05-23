@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { Session } from "@supabase/supabase-js";
+import { useT } from "@/lib/i18n";
 import { supabase, supabaseEnvMissing, supabaseStorageKey } from "@/lib/supabaseClient";
 import { Card } from "./Card";
 
@@ -20,11 +21,13 @@ function clearStoredSupabaseSession() {
 
 export function AuthGate({
   children,
-  title = "Sign in to view telemetry"
+  title
 }: {
   children: (session: Session) => ReactNode;
   title?: string;
 }) {
+  const t = useT();
+  const gateTitle = title ?? t("auth.signInTitle");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -111,11 +114,8 @@ export function AuthGate({
   if (supabaseEnvMissing()) {
     return (
       <Card>
-        <div className="cardTitle">Missing dashboard environment</div>
-        <p className="muted">
-          Set <code>NEXT_PUBLIC_SUPABASE_URL</code> and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> in{" "}
-          <code>dashboard/.env.local</code>, then restart <code>npm run dev</code>.
-        </p>
+        <div className="cardTitle">{t("auth.missingEnv")}</div>
+        <p className="muted">{t("auth.missingEnvBody")}</p>
       </Card>
     );
   }
@@ -125,7 +125,7 @@ export function AuthGate({
       <Card className="authCard">
         <div>
           <div className="eyebrow">Telemetry access</div>
-          <h1>{title}</h1>
+          <h1>{gateTitle}</h1>
           <p className="muted">
             Supabase RLS keeps windows scoped to the signed-in user. Use this account&apos;s user id when
             starting ESP32 or replay ingest.
@@ -140,7 +140,7 @@ export function AuthGate({
               setStatus("");
             }}
           >
-            Sign in
+            {t("auth.signIn")}
           </button>
           <button
             type="button"
@@ -150,14 +150,14 @@ export function AuthGate({
               setStatus("");
             }}
           >
-            Create account
+            {t("auth.signUp")}
           </button>
         </div>
         <form className="authForm" onSubmit={submitAuth}>
           <input
             value={email}
             onChange={(event) => setEmail(event.target.value)}
-            placeholder="Email"
+            placeholder={t("auth.email")}
             className="input"
             type="email"
             autoComplete="email"
@@ -166,7 +166,7 @@ export function AuthGate({
             <input
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="Password"
+              placeholder={t("auth.password")}
               type={showPassword ? "text" : "password"}
               className="input"
               autoComplete={authMode === "signIn" ? "current-password" : "new-password"}
@@ -175,9 +175,9 @@ export function AuthGate({
               type="button"
               className="passwordToggle"
               onClick={() => setShowPassword((current) => !current)}
-              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-label={showPassword ? t("auth.hide") : t("auth.show")}
             >
-              {showPassword ? "Hide" : "Show"}
+              {showPassword ? t("auth.hide") : t("auth.show")}
             </button>
           </div>
           {authMode === "signUp" ? (
@@ -185,7 +185,7 @@ export function AuthGate({
               <input
                 value={confirmPassword}
                 onChange={(event) => setConfirmPassword(event.target.value)}
-                placeholder="Confirm password"
+                placeholder={t("auth.confirmPassword")}
                 type={showPassword ? "text" : "password"}
                 className="input"
                 autoComplete="new-password"
@@ -201,7 +201,7 @@ export function AuthGate({
             </div>
           ) : null}
           <button className="btn btnPrimary" type="submit">
-            {authMode === "signIn" ? "Sign in" : "Create account"}
+            {authMode === "signIn" ? t("auth.signIn") : t("auth.signUp")}
           </button>
         </form>
         {status ? (
@@ -222,6 +222,7 @@ export function AuthGate({
 }
 
 export function UserBadge({ session }: { session: Session }) {
+  const t = useT();
   const [status, setStatus] = useState("");
   const userId = session.user.id;
 
@@ -246,10 +247,10 @@ export function UserBadge({ session }: { session: Session }) {
         user_id <strong className="num">{userId.slice(0, 8)}...</strong>
       </span>
       <button type="button" className="btn btnTiny" onClick={copyUserId}>
-        {status || "Copy"}
+        {status || t("auth.copyUserId")}
       </button>
       <button type="button" className="btn btnTiny" onClick={signOut}>
-        Sign out
+        {t("auth.signOut")}
       </button>
     </div>
   );

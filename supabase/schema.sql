@@ -44,6 +44,7 @@ create table if not exists public.telemetry_windows (
   -- simple uncertainty proxy (optional)
   sbp_std real,
   dbp_std real,
+  synthetic boolean not null default false,
 
   -- raw samples (optional; can be null to save space)
   ecg jsonb,

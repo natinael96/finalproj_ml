@@ -1,0 +1,14 @@
+{
+  "mae_sbp": 6.92,
+  "mae_dbp": 4.17,
+  "rmse_sbp": 8.36,
+  "rmse_dbp": 4.43,
+  "within_5mmhg_sbp": 0.33,
+  "within_5mmhg_dbp": 0.83,
+  "n_test": 120,
+  "n_features": 18,
+  "split_method": "group_by_subject",
+  "feature_mode": "esp32_single_ppg",
+  "live_schema_compatible": true,
+  "window_s": 8.0
+}

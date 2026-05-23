@@ -1,0 +1,33 @@
+[
+  {
+    "email": "esgeb2011@gmail.com",
+    "password": "Admin123!",
+    "role": "admin",
+    "display_name": "Esayas Admin"
+  },
+  {
+    "email": "believebelete@gmail.com",
+    "password": "Admin123!",
+    "role": "admin",
+    "display_name": "Abeselom Admin"
+  },
+  {
+    "email": "Abdisse@local.test",
+    "password": "user123!",
+    "role": "user",
+    "display_name": "Abdisse User"
+  },
+
+  {
+    "email": "yoseph@local.test",
+    "password": "user123!",
+    "role": "user",
+    "display_name": "Yoseph User"
+  },
+  {
+    "email": "kirubel@local.test",
+    "password": "user123!",
+    "role": "user",
+    "display_name": "Kirubel User"
+  }
+]

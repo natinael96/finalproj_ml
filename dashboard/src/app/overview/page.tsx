@@ -1,47 +1,42 @@
+"use client";
+
 import Link from "next/link";
 import { Card, SectionHeader } from "@/components/Card";
 import { KpiTile } from "@/components/KpiTile";
-
-const stages = [
-  ["Acquire", "ESP32 or replay script streams ECG, PPG, accelerometer, and gyroscope samples."],
-  ["Window", "FastAPI buffers samples into 8-second inference windows."],
-  ["Extract", "The pipeline computes PTT, HRV, PPG statistics, and motion features."],
-  ["Predict", "The trained multi-output model estimates SBP and DBP."],
-  ["Visualize", "Supabase and WebSockets feed live, history, lab, and examiner pages."]
-];
+import { useI18n } from "@/lib/i18n";
 
 export default function OverviewPage() {
+  const { messages: m, t } = useI18n();
+
   return (
     <div className="pageStack">
-      <SectionHeader eyebrow="Project objective" title="Cuffless BP monitoring, end to end" />
+      <SectionHeader eyebrow={t("overview.eyebrow")} title={t("overview.title")} />
       <div className="hero">
         <div className="heroCopy">
           <div>
-            <div className="eyebrow">Research prototype</div>
-            <div className="heroHeadline">From wearable signals to demo-ready BP insight.</div>
-            <p className="muted">
-              This dashboard turns the final-year project into a guided product surface: live inference, stored
-              history, device/session operations, model methodology, and a technical API lab.
-            </p>
+            <div className="eyebrow">{t("overview.heroEyebrow")}</div>
+            <div className="heroHeadline">{t("overview.heroHeadline")}</div>
+            <p className="muted">{t("overview.heroBody")}</p>
           </div>
           <div className="heroStrip">
-            <Link href="/live" className="badge">Open live monitor</Link>
-            <Link href="/lab" className="badge">Test API lab</Link>
-            <Link href="/model" className="badge">Explain the model</Link>
+            <Link href="/live" className="badge">{t("overview.openLive")}</Link>
+            <Link href="/history" className="badge">{t("overview.viewHistory")}</Link>
+            <Link href="/lab" className="badge">{t("overview.testLab")}</Link>
+            <Link href="/model" className="badge">{t("overview.explainModel")}</Link>
           </div>
         </div>
         <div className="heroPanel">
-          <KpiTile label="Prediction target" value="SBP / DBP" meta="Systolic and diastolic pressure in mmHg" />
-          <KpiTile label="Window cadence" value="8" unit="sec" meta="Default tumbling window size" />
-          <KpiTile label="Primary source" value="ECG + PPG" meta="IMU motion features support artifact handling" />
+          <KpiTile label={t("overview.predictionTarget")} value="SBP / DBP" meta={t("overview.predictionMeta")} />
+          <KpiTile label={t("overview.windowCadence")} value="8" unit={t("common.sec")} meta={t("overview.windowMeta")} />
+          <KpiTile label={t("overview.primarySource")} value="ECG + PPG" meta={t("overview.primaryMeta")} />
         </div>
       </div>
 
       <div className="twoCol">
         <Card>
-          <div className="cardTitle">Demo checklist</div>
+          <div className="cardTitle">{t("overview.demoChecklist")}</div>
           <div className="timeline">
-            {["Start FastAPI on port 8000", "Sign in to the dashboard", "Copy user_id into replay or ESP32 ingest", "Open Live while streaming", "Use History and Model pages for questions"].map((item) => (
+            {m.overview.demoSteps.map((item) => (
               <div className="timelineItem" key={item}>
                 <span className="timelineDot" />
                 <p className="muted">{item}</p>
@@ -50,27 +45,20 @@ export default function OverviewPage() {
           </div>
         </Card>
         <Card className="callout">
-          <div className="cardTitle">Presentation map</div>
-          <p className="muted">
-            Overview, Model, About, and Lab explain the project without telemetry sign-in. Live, History, and Devices
-            require the Supabase user that matches the ESP32 or replay <code>user_id</code>.
-          </p>
+          <div className="cardTitle">{t("overview.presentationMap")}</div>
+          <p className="muted">{t("overview.presentationBody")}</p>
         </Card>
       </div>
 
       <Card className="callout">
-        <div className="cardTitle">Important limitation</div>
-        <p className="muted">
-          The project is a proof-of-concept research prototype. It demonstrates signal acquisition, feature
-          extraction, inference, persistence, and visualization, but it is not calibrated or certified for medical
-          diagnosis.
-        </p>
+        <div className="cardTitle">{t("overview.limitation")}</div>
+        <p className="muted">{t("overview.limitationBody")}</p>
       </Card>
 
       <Card>
-        <div className="cardTitle">Pipeline narrative</div>
+        <div className="cardTitle">{t("overview.pipeline")}</div>
         <div className="fiveStageGrid">
-          {stages.map(([title, text]) => (
+          {m.overview.stages.map(([title, text]) => (
             <div className="stageCard" key={title}>
               <div className="eyebrow">{title}</div>
               <p className="muted">{text}</p>
