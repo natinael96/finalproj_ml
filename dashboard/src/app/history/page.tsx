@@ -5,6 +5,7 @@ import { AuthGate, UserBadge } from "@/components/AuthGate";
 import { Card, SectionHeader } from "@/components/Card";
 import { DailyTrendChart } from "@/components/DailyTrendChart";
 import { KpiTile } from "@/components/KpiTile";
+import { SignalViewer } from "@/components/SignalViewer";
 import { TelemetryTable } from "@/components/TelemetryTable";
 import { TrendChart } from "@/components/TrendChart";
 import { summarizeTelemetry } from "@/lib/bp";
