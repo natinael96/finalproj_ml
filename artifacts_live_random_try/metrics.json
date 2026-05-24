@@ -1,0 +1,31 @@
+{
+  "mae_sbp": 8.31473243469767,
+  "mae_dbp": 5.653716036155904,
+  "rmse_sbp": 11.105421979412823,
+  "rmse_dbp": 7.421409424520517,
+  "within_5mmhg_sbp": 0.4356060606060606,
+  "within_5mmhg_dbp": 0.5435606060606061,
+  "per_subject_mae_sbp_mean": null,
+  "per_subject_mae_sbp_std": null,
+  "per_subject_mae_dbp_mean": null,
+  "per_subject_mae_dbp_std": null,
+  "n_train_fit": 2112,
+  "n_calib": 0,
+  "n_test": 528,
+  "n_features": 18,
+  "split_method": "random_window",
+  "feature_mode": "esp32_single_ppg",
+  "model_kind": "simple_extratrees",
+  "meta_learner": null,
+  "optuna_trials": 0,
+  "base_estimators": [
+    "extratrees"
+  ],
+  "live_schema_compatible": true,
+  "window_s": 8.0,
+  "max_windows_per_record": 40,
+  "physionet_source": "auto",
+  "optuna_available": false,
+  "target_sbp_met": false,
+  "target_dbp_met": false
+}

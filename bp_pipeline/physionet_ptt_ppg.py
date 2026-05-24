@@ -44,9 +44,11 @@ def _find_subjects_info_anywhere(root: Path) -> Path:
 def _load_subjects_info(root: Path) -> pd.DataFrame:
     info_path = _find_subjects_info_anywhere(root)
     df = pd.read_csv(info_path)
-    # Normalize filename col
+    # Normalize filename col (PhysioNet 1.1.0 CSV uses "record" in some layouts)
+    if "filename" not in df.columns and "record" in df.columns:
+        df = df.rename(columns={"record": "filename"})
     if "filename" not in df.columns:
-        raise ValueError("subjects_info.csv must contain a 'filename' column")
+        raise ValueError("subjects_info.csv must contain a 'filename' or 'record' column")
     return df
 
 

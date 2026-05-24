@@ -1,22 +1,22 @@
 {
   "names": [
-    "gyro_jerk_rms",
+    "rr_mean_s",
     "gyro_rms",
+    "ppg_std",
     "acc_jerk_rms",
     "acc_rms",
-    "ppg_kurtosis",
-    "ppg_skew",
-    "ppg_std",
-    "ppg_mean",
-    "hrv_rmssd_s",
+    "gyro_jerk_rms",
     "rr_std_s",
-    "rr_mean_s",
     "inv_ptt_x_hr",
-    "inv_ptt2",
-    "inv_ptt",
-    "log_ptt",
-    "pwv_proxy",
     "ptt_std_s",
-    "ptt_mean_s"
+    "hrv_rmssd_s",
+    "ppg_kurtosis",
+    "ppg_mean",
+    "pwv_proxy",
+    "ptt_mean_s",
+    "inv_ptt",
+    "inv_ptt2",
+    "log_ptt",
+    "ppg_skew"
   ]
 }
