@@ -253,7 +253,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
       {(loading || multiLoading) && !showCharts && (
         <div className="chartEmpty">
           <strong>Loading signals…</strong>
-          <span>Fetching raw batches from database</span>
+          <span>Fetching signal data…</span>
         </div>
       )}
 
@@ -264,7 +264,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
           <span>
             {selectedCycle ? "Select a different cycle above." :
               selectedDevice ? "Try a different device or send data from the ESP32." :
-                <>Send data from the ESP32 — each POST saves one batch to <code>esp32_raw_batches</code></>}
+                "Connect an ESP32 and start streaming to see signals here."}
           </span>
         </div>
       )}
@@ -299,7 +299,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
             ) : tab === "accel" ? (
               <div className="chartEmpty">
                 <strong>No accelerometer data</strong>
-                <span>ax / ay / az columns are empty in the stored batches</span>
+                <span>No accelerometer data available for this recording.</span>
               </div>
             ) : null
           )}

@@ -13,7 +13,6 @@ const navKeys = [
   { href: "/live", key: "nav.live" },
   { href: "/history", key: "nav.history" },
   { href: "/devices", key: "nav.devices" },
-  { href: "/lab", key: "nav.lab" },
   { href: "/model", key: "nav.model" },
   { href: "/about", key: "nav.about" }
 ] as const;

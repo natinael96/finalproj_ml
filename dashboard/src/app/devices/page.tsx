@@ -279,9 +279,6 @@ function DeviceCard({
                 style={{ fontSize: 11, opacity: 0.7 }}>✎ Rename</button>
             </div>
           )}
-          <span style={{ fontSize: 11, color: "var(--faint)", fontFamily: "Cascadia Code, Consolas, monospace" }}>
-            {deviceId}
-          </span>
         </div>
 
         {/* Stats chips */}
@@ -478,19 +475,10 @@ function DevicesView({ userId, sessionNode }: { userId: string; sessionNode: Rea
         {sessionNode}
       </SectionHeader>
 
-      <div className="threeCol">
+      <div className="twoCol">
         <KpiTile label={t("devices.knownDevices")} value={devices.length} meta={status || t("devices.fromTelemetry")} />
         <KpiTile label={t("devices.totalWindows")} value={rows.length} />
-        <KpiTile label={t("devices.currentUser")} value={userId.slice(0, 8)} meta={t("devices.userMeta")} />
       </div>
-
-      <Card className="callout">
-        <div className="cardTitle">{t("devices.setupPattern")}</div>
-        <p className="muted">{t("devices.setupBody")}</p>
-        <pre className="preBlock">
-{`ws://<PC_LAN_IP>:8000/ws/esp32?device_id=esp32-01&fs_hz=100&window_s=8&user_id=${userId}`}
-        </pre>
-      </Card>
 
       {devices.length === 0 ? (
         <Card><TelemetryEmptyState /></Card>

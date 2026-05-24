@@ -83,12 +83,8 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
           <div className="heroStrip">
             <AlertBadge tone={band.tone}>{band.label}</AlertBadge>
             <AlertBadge tone={liveTone}>{liveLabel}</AlertBadge>
-            <AlertBadge tone={summary.latest?.synthetic ? "warn" : summary.latest?.synthetic === false ? "good" : "neutral"}>
-              {summary.latest?.synthetic ? t("live.syntheticFallback") : summary.latest?.synthetic === false ? t("live.sensorData") : t("live.sourceUnknown")}
-            </AlertBadge>
             <span className="badge">{t("common.device")} {summary.latest?.device_id ?? "-"}</span>
             <span className="badge">{t("common.time")} {formatShortTime(summary.latest?.created_at)}</span>
-            <span className="badge">user {sessionId.slice(0, 8)}...</span>
           </div>
         </div>
         <div className="heroPanel">
@@ -133,8 +129,8 @@ function LiveMonitor({ sessionId, sessionNode }: { sessionId: string; sessionNod
         <KpiTile label={t("live.realtime")} value={telemetryStatus.realtime} meta={t("live.realtimeMeta")} tone={toneForConnection(telemetryStatus.realtime)} />
         <KpiTile
           label={t("live.fastApiSocket")}
-          value={wsEnabled ? telemetryStatus.websocket : "disabled"}
-          meta={wsEnabled ? t("live.socketMeta") : "Set NEXT_PUBLIC_BP_WEBSOCKET_ENABLED=true"}
+          value={wsEnabled ? telemetryStatus.websocket : t("live.socketDisabled")}
+          meta={wsEnabled ? t("live.socketMeta") : t("live.socketDisabledMeta")}
           tone={wsEnabled ? toneForConnection(telemetryStatus.websocket) : "neutral"}
         />
       </div>

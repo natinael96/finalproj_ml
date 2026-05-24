@@ -124,12 +124,7 @@ export function AuthGate({
     return (
       <Card className="authCard">
         <div>
-          <div className="eyebrow">Telemetry access</div>
           <h1>{gateTitle}</h1>
-          <p className="muted">
-            Supabase RLS keeps windows scoped to the signed-in user. Use this account&apos;s user id when
-            starting ESP32 or replay ingest.
-          </p>
         </div>
         <div className="seg" aria-label="Authentication mode">
           <button
@@ -254,8 +249,7 @@ export function UserBadge({ session }: { session: Session }) {
         <strong style={{ fontSize: 14 }}>{displayName}</strong>
         <span className="muted" style={{ fontSize: 12 }}>{email}</span>
       </div>
-      <button type="button" className="btn btnTiny" onClick={copyUserId}
-        title={`user_id: ${userId}`}>
+      <button type="button" className="btn btnTiny" onClick={copyUserId}>
         {status || t("auth.copyUserId")}
       </button>
       <button type="button" className="btn btnTiny" onClick={signOut}>

@@ -40,24 +40,8 @@ export default function AboutPage() {
       </div>
 
       <Card className="callout">
-        <div className="cardTitle">{t("about.fallback")}</div>
-        <p className="muted">{t("about.fallbackBody")}</p>
-      </Card>
-
-      <Card>
-        <div className="cardTitle">{t("about.runbook")}</div>
-        <pre className="preBlock">
-{`# API
-uvicorn bp_api.main:app --host 0.0.0.0 --port 8000 --reload
-
-# Dashboard
-cd dashboard
-npm install
-npm run dev
-
-# Browser
-http://localhost:3000/overview`}
-        </pre>
+        <div className="cardTitle">{t("about.note")}</div>
+        <p className="muted">{t("about.noteBody")}</p>
       </Card>
     </div>
   );

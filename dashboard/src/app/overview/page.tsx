@@ -21,7 +21,6 @@ export default function OverviewPage() {
           <div className="heroStrip">
             <Link href="/live" className="badge">{t("overview.openLive")}</Link>
             <Link href="/history" className="badge">{t("overview.viewHistory")}</Link>
-            <Link href="/lab" className="badge">{t("overview.testLab")}</Link>
             <Link href="/model" className="badge">{t("overview.explainModel")}</Link>
           </div>
         </div>
@@ -34,9 +33,9 @@ export default function OverviewPage() {
 
       <div className="twoCol">
         <Card>
-          <div className="cardTitle">{t("overview.demoChecklist")}</div>
+          <div className="cardTitle">{t("overview.quickStart")}</div>
           <div className="timeline">
-            {m.overview.demoSteps.map((item) => (
+            {m.overview.quickStartSteps.map((item) => (
               <div className="timelineItem" key={item}>
                 <span className="timelineDot" />
                 <p className="muted">{item}</p>
@@ -45,8 +44,8 @@ export default function OverviewPage() {
           </div>
         </Card>
         <Card className="callout">
-          <div className="cardTitle">{t("overview.presentationMap")}</div>
-          <p className="muted">{t("overview.presentationBody")}</p>
+          <div className="cardTitle">{t("overview.navigationGuide")}</div>
+          <p className="muted">{t("overview.navigationBody")}</p>
         </Card>
       </div>
 

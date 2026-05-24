@@ -16,7 +16,6 @@ export default function ErrorPage({ error, reset }: { error: Error; reset: () =>
           <button type="button" className="btn btnPrimary" onClick={reset}>
             {t("error.retry")}
           </button>
-          <span className="badge tone-bad">{error.message || t("error.unknown")}</span>
         </div>
       </Card>
     </div>

@@ -6,7 +6,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Cuffless BP Studio",
-  description: "Multi-page dashboard for cuffless blood pressure prototype telemetry"
+  description: "Real-time cuffless blood pressure monitoring dashboard"
 };
 
 export default function RootLayout({
