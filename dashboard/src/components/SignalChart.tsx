@@ -356,6 +356,87 @@ function ChartCore({ allSeries, unit, fs, height, vStart, vEnd, isZoomed, showHi
   );
 }
 
+// ─── export helper ───────────────────────────────────────────────────────────
+
+function exportChartAsPng(svgEl: SVGSVGElement, filename: string) {
+  const vb   = svgEl.viewBox.baseVal;
+  const W    = vb.width  || svgEl.clientWidth  || 720;
+  const H    = vb.height || svgEl.clientHeight || 200;
+
+  // Resolve CSS custom properties from the document root
+  const rootCSS = getComputedStyle(document.documentElement);
+  const cssVar  = (name: string, fallback: string) =>
+    rootCSS.getPropertyValue(name).trim() || fallback;
+
+  const surface = cssVar("--surface", "#ffffff");
+  const border  = cssVar("--border",  "#e2e8f0");
+  const muted   = cssVar("--muted",   "#64748b");
+  const ink     = cssVar("--ink",     "#1a1a2e");
+
+  const clone = svgEl.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("width",  String(W));
+  clone.setAttribute("height", String(H));
+  clone.setAttribute("xmlns",  "http://www.w3.org/2000/svg");
+
+  // White background rect
+  const bg = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  bg.setAttribute("width",  "100%");
+  bg.setAttribute("height", "100%");
+  bg.setAttribute("fill",   surface);
+  clone.insertBefore(bg, clone.firstChild);
+
+  // Inline style block replacing CSS classes with resolved values
+  const styleEl = document.createElementNS("http://www.w3.org/2000/svg", "style");
+  styleEl.textContent = `
+    .signalGridLine { stroke:${border}; stroke-width:1; fill:none; }
+    .signalGridMid  { stroke:${border}; stroke-width:0.5; stroke-dasharray:4 3; fill:none; }
+    .axisLabel      { fill:${muted}; font-size:11px; font-family:Consolas,monospace; }
+  `;
+  clone.insertBefore(styleEl, clone.firstChild);
+
+  // Resolve any remaining var(--xxx) in inline attributes
+  const resolveVars = (el: Element) => {
+    for (const attr of ["stroke", "fill", "color", "style"]) {
+      const val = el.getAttribute(attr);
+      if (val?.includes("var(")) {
+        el.setAttribute(attr, val.replace(/var\((--[\w-]+)[^)]*\)/g,
+          (_, prop) => cssVar(prop, ink)));
+      }
+    }
+    for (const child of Array.from(el.children)) resolveVars(child);
+  };
+  resolveVars(clone);
+
+  const svgStr = new XMLSerializer().serializeToString(clone);
+  const blob   = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+  const url    = URL.createObjectURL(blob);
+
+  const img = new Image();
+  img.onload = () => {
+    const scale  = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width  = W * scale;
+    canvas.height = H * scale;
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = surface;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(url);
+    const a = document.createElement("a");
+    a.href     = canvas.toDataURL("image/png");
+    a.download = `${filename}.png`;
+    a.click();
+  };
+  img.onerror = () => {
+    // Fallback: download raw SVG
+    const a = document.createElement("a");
+    a.href     = url;
+    a.download = `${filename}.svg`;
+    a.click();
+  };
+  img.src = url;
+}
+
 // ─── modal chart ─────────────────────────────────────────────────────────────
 
 function ModalChart({
@@ -442,6 +523,18 @@ function ModalChart({
             {isZoomed && (
               <button className="btn btnTiny" type="button" onClick={view.reset}>Reset zoom</button>
             )}
+            {/* export PNG */}
+            <button
+              className="btn btnTiny"
+              type="button"
+              title="Export chart as PNG"
+              onClick={() => {
+                if (view.svgRef.current)
+                  exportChartAsPng(view.svgRef.current, label.replace(/\s+/g, "_").toLowerCase());
+              }}
+            >
+              ↓ PNG
+            </button>
             <button className="btn btnTiny" type="button" onClick={onClose}
               style={{ fontSize: 16, lineHeight: 1, padding: "4px 10px" }} aria-label="Close">✕</button>
           </div>
@@ -560,6 +653,18 @@ export function SignalChart({
           {isZoomed && !multi && (
             <button className="btn btnTiny" type="button" onClick={view.reset}>Reset zoom</button>
           )}
+          <button
+            className="btn btnTiny"
+            type="button"
+            title="Export chart as PNG"
+            onClick={(ev) => {
+              ev.stopPropagation();
+              if (view.svgRef.current)
+                exportChartAsPng(view.svgRef.current, label.replace(/\s+/g, "_").toLowerCase());
+            }}
+          >
+            ↓ PNG
+          </button>
           <button className="btn btnTiny signalExpandBtn" type="button"
             onClick={handleExpandClick} title="Expand to inspect values" aria-label="Open full-screen chart">⤢</button>
         </div>
