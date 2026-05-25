@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from bp_pipeline.features import DEFAULT_FEATURES, FeatureSchema, extract_features_from_signals
 from bp_pipeline.inference import ArtifactBundle, load_artifact_bundle
 from bp_pipeline.preprocess import SamplingRates
+from bp_api.fhir_router import router as fhir_router
 
 MAX_BATCH_ROWS = 256
 MAX_FEATURES_PER_ROW = 512
@@ -144,6 +145,7 @@ async def _ws_api_key_allowed(ws: WebSocket) -> bool:
 
 
 app = FastAPI(title="BP Predictor API", version="0.1.0")
+app.include_router(fhir_router, dependencies=[Depends(_require_api_key)])
 _allowed_origins = [
     origin.strip()
     for origin in os.environ.get(
@@ -181,6 +183,7 @@ async def _print_runtime_urls() -> None:
     print(f"  Local API:        {local_base}", flush=True)
     print(f"  LAN API:          {lan_base}", flush=True)
     print(f"  Health:           {local_base}/health", flush=True)
+    print(f"  FHIR R4:          {local_base}/fhir/metadata", flush=True)
     print(
         f"  ESP32 ingest:     POST {lan_base}/esp32/ingest  "
         f"(buffer → {ESP32_PREDICTION_SAMPLES} samples @ {ESP32_PREDICTION_FS_HZ} Hz)",

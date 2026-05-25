@@ -70,6 +70,9 @@ htmlcov/
 *.log
 logs/
 
+# --- Local documentation archive ---
+docs/
+
 # --- ESP32 firmware secrets ---
 firmware/**/config.h
 
