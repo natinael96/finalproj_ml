@@ -1,0 +1,342 @@
+export const en = {
+  common: {
+    mmHg: "mmHg",
+    sec: "sec",
+    dismiss: "Dismiss",
+    exportCsv: "Export CSV",
+    userMode: "User mode",
+    detailedMode: "Detailed",
+    device: "device",
+    time: "time",
+    unknown: "unknown",
+    sensor: "sensor",
+    synthetic: "synthetic",
+    loading: "Loading...",
+    language: "Language",
+    theme: "Theme",
+    themeLight: "Light",
+    themeDark: "Dark",
+    langEn: "English",
+    langAm: "አማርኛ"
+  },
+  nav: {
+    overview: "Overview",
+    live: "Live",
+    history: "History",
+    devices: "Devices",
+    lab: "Lab",
+    model: "Model",
+    about: "About",
+    brandTitle: "Cuffless BP Studio",
+    brandSub: "Continuous BP monitoring",
+    sidebarNote: "Use live mode for streaming, history for trends, and model for methodology."
+  },
+  disclaimer: {
+    title: "Not for medical diagnosis.",
+    body: "Predictions are estimates from wearable signals. Consult a clinician for health decisions; use repeated windows for trend context, not single readings."
+  },
+  empty: {
+    title: "No telemetry windows yet",
+    step1: "Sign in to the dashboard",
+    step2: "Connect your device and start streaming",
+    step3: "Ensure the BP inference API is running",
+    step4: "First window appears after ~8 seconds of stable signal"
+  },
+  loading: {
+    title: "Preparing dashboard",
+    body: "Loading the route and dashboard state..."
+  },
+  skeleton: {
+    kpi: "Loading metrics",
+    chart: "Loading chart",
+    table: "Loading table"
+  },
+  overview: {
+    eyebrow: "System overview",
+    title: "Cuffless BP monitoring, end to end",
+    heroEyebrow: "Intelligent BP monitoring",
+    heroHeadline: "From wearable signals to real-time BP insight.",
+    heroBody:
+      "This dashboard delivers continuous blood pressure estimation from wearable sensors: live inference, stored history, device management, and model methodology.",
+    openLive: "Open live monitor",
+    viewHistory: "View history trends",
+    testLab: "Test API lab",
+    explainModel: "Explain the model",
+    predictionTarget: "Prediction target",
+    predictionMeta: "Systolic and diastolic pressure in mmHg",
+    windowCadence: "Window cadence",
+    windowMeta: "Default tumbling window size",
+    primarySource: "Primary source",
+    primaryMeta: "IMU motion features support artifact handling",
+    quickStart: "Quick start",
+    quickStartSteps: [
+      "Connect your ESP32 device and start the inference API",
+      "Sign in to the dashboard",
+      "Open Live to see real-time BP predictions",
+      "Use History for trends and Devices to manage sessions"
+    ],
+    navigationGuide: "Navigation guide",
+    navigationBody:
+      "Overview and Model are public. Live, History, and Devices require sign-in and an active device connection.",
+    limitation: "Clinical note",
+    limitationBody:
+      "This system is not calibrated or certified for medical diagnosis. It demonstrates continuous signal acquisition, feature extraction, machine learning inference, and visualization. Always consult a clinician for health decisions.",
+    pipeline: "How it works",
+    stages: [
+      ["Acquire", "ESP32 streams ECG, PPG, accelerometer, and gyroscope samples wirelessly."],
+      ["Window", "The inference API buffers samples into 8-second tumbling windows."],
+      ["Extract", "The pipeline computes PTT, HRV, PPG morphology, and motion features."],
+      ["Predict", "The trained multi-output model estimates SBP and DBP in mmHg."],
+      ["Visualize", "Results are persisted and streamed live to the dashboard in real time."]
+    ] as [string, string][]
+  },
+  live: {
+    authTitle: "Sign in for the live BP monitor",
+    eyebrow: "Live monitor",
+    title: "Streaming BP windows",
+    currentInference: "Current inference",
+    heroBody: "Latest SBP/DBP from the 8-second pipeline. MAP {map} mmHg · pulse pressure {pp} mmHg.",
+    syntheticFallback: "Estimated fallback",
+    sensorData: "Sensor data",
+    sourceUnknown: "Source unknown",
+    windowsLoaded: "Windows loaded",
+    windowsMeta: "History plus live updates",
+    sbpAlerts: "SBP alerts",
+    alertThreshold: "SBP alert threshold",
+    thresholdNote: "Used for dashboard highlighting only; it does not change model predictions.",
+    avgSbp: "Average SBP",
+    avgDbp: "Average DBP",
+    sessionMap: "Session MAP",
+    activeDevices: "Active devices",
+    syntheticWindows: "{count} synthetic fallback window(s)",
+    dbLoad: "Database",
+    dbMeta: "Historical data query",
+    realtime: "Real-time",
+    realtimeMeta: "Live data subscription",
+    fastApiSocket: "Inference API",
+    socketMeta: "WebSocket broadcast",
+    socketDisabled: "Disabled",
+    socketDisabledMeta: "Enable WebSocket in environment settings",
+    liveTrend: "Live trend",
+    liveTrendBody: "Recent SBP/DBP estimates, newest windows appended as they arrive.",
+    receiving: "Receiving windows",
+    hardwareChecklist: "Device setup",
+    hw1: "1. Start inference API",
+    hw1Body: "Start the BP inference API before connecting your device.",
+    hw2: "2. Device connection",
+    hw2Body: "Use the host machine's LAN IP address when connecting the ESP32.",
+    hw3: "3. First prediction",
+    hw3Body: "Expect the first BP window after about 8 seconds of stable ECG/PPG signal.",
+    recentFeed: "Recent feed",
+    curated20: "Curated latest 20 windows.",
+    detailed80: "Detailed latest 80 windows."
+  },
+  history: {
+    authTitle: "Sign in to review historical windows",
+    eyebrow: "Historical analytics",
+    title: "Telemetry history",
+    windowsInView: "Windows in view",
+    meanSbp: "Mean SBP",
+    meanDbp: "Mean DBP",
+    thresholdHits: "SBP threshold hits",
+    meanMap: "Mean MAP",
+    mapMeta: "Mean arterial pressure",
+    pulsePressure: "Pulse pressure",
+    ppMeta: "SBP − DBP average",
+    sbpRange: "SBP range",
+    elevated: "Elevated windows",
+    elevatedMeta: "SBP ≥130 or DBP ≥80",
+    filtersExport: "Filters and export",
+    filtersBody: "Review stored predictions with date range, device filter, and CSV export.",
+    deviceFilter: "Device filter",
+    allDevices: "All devices",
+    dateRange: "Date range",
+    range24h: "Last 24 hours",
+    range7d: "Last 7 days",
+    range30d: "Last 30 days",
+    rangeAll: "All loaded windows",
+    sbpThreshold: "SBP threshold",
+    currentView: "Current view",
+    sessionTrend: "Session trend",
+    sessionTrendBody: "Chronological SBP/DBP estimates across the selected period.",
+    dailyAverages: "Daily averages",
+    dailyBody: "Per-day mean blood pressure — useful for spotting sustained elevation vs single spikes.",
+    storedWindows: "Stored telemetry windows"
+  },
+  devices: {
+    authTitle: "Sign in to inspect devices and sessions",
+    eyebrow: "Operations",
+    title: "Devices and sessions",
+    knownDevices: "Known devices",
+    fromTelemetry: "Registered devices",
+    totalWindows: "Total windows",
+    currentUser: "Current user",
+    userMeta: "Your account identifier",
+    setupPattern: "Device connection",
+    setupBody: "Ensure your device is connected and streaming to see live data here.",
+    registry: "Device registry",
+    noDevices: "No devices observed.",
+    noDevicesBody: "Stream at least one telemetry window to populate this operational view.",
+    windows: "windows",
+    lastSeen: "last seen",
+    meanSbp: "mean SBP",
+    meanDbp: "mean DBP",
+    viewTrends: "View trends"
+  },
+  lab: {
+    eyebrow: "Technical lab",
+    title: "API and CSV prediction workspace",
+    apiBase: "API base URL",
+    health: "Health",
+    healthMeta: "GET /health",
+    loaded: "Loaded",
+    unknown: "Unknown",
+    lastStatus: "Last status",
+    runAction: "Run a lab action",
+    fastApiUrl: "FastAPI URL",
+    healthEndpoint: "Health endpoint",
+    checkHealth: "Check /health",
+    singlePredict: "Single feature-vector prediction",
+    singleBody: "Paste a feature vector aligned with the deployed model schema, then call POST /predict.",
+    predictOne: "Predict one",
+    csvBatch: "CSV batch prediction",
+    csvBody: "CSV with a JSON features column or numeric f0,f1,... columns.",
+    predictBatch: "Predict batch",
+    rows: "{count} row(s)"
+  },
+  model: {
+    eyebrow: "Model methodology",
+    title: "How the BP estimate is produced",
+    loadingMeta: "Loading model metadata...",
+    liveHealth: "Live API health loaded.",
+    offlineMetrics: "Offline — showing stored artifact metrics.",
+    apiUnreachable: "API unreachable — showing stored artifact metrics.",
+    sbpMae: "SBP MAE",
+    dbpMae: "DBP MAE",
+    features: "Features",
+    schemaOk: "Live schema compatible",
+    schemaPending: "Schema check pending",
+    testWindows: "Test windows",
+    within5: "Within ±5 mmHg: SBP {sbp}% · DBP {dbp}%",
+    modelLoaded: "Model loaded",
+    yes: "Yes",
+    no: "No",
+    supabase: "Supabase",
+    configured: "Configured",
+    missing: "Missing",
+    windowSize: "Window size",
+    physiology: "Physiology argument",
+    physiologyBody:
+      "ECG supplies the heart's electrical timing and PPG supplies the peripheral pulse arrival. The delay between them, pulse transit time, changes with pulse wave velocity and arterial stiffness. The model uses PTT together with heart-rate, PPG morphology, and motion features because BP is not determined by one signal alone.",
+    uncertainty: "Prediction uncertainty",
+    uncertaintyBody:
+      "When available, the uncertainty values are tree-spread heuristics from the ensemble. They indicate relative confidence between windows but are not calibrated clinical intervals.",
+    ahaTitle: "AHA-style classification (dashboard)",
+    ahaBands: [
+      ["Normal", "SBP <120 and DBP <80"],
+      ["Elevated", "SBP 120–129 and DBP <80"],
+      ["Stage 1 HTN", "SBP 130–139 or DBP 80–89"],
+      ["Stage 2 HTN", "SBP ≥140 or DBP ≥90"]
+    ] as [string, string][],
+    featureFamilies: "Feature families",
+    featuresList: [
+      "PTT mean/std and inverse PTT proxy",
+      "RR interval mean/std and HRV RMSSD",
+      "PPG mean, standard deviation, skewness, kurtosis",
+      "Accelerometer and gyroscope RMS / jerk RMS"
+    ],
+    limitations: "Known limitations",
+    limitationItems: [
+      "This is not a medical-grade device; clinical deployment would require rigorous validation and regulatory approval.",
+      "Subject-specific calibration and labeled reference data would improve real-world accuracy.",
+      "Motion artifacts and poor PPG contact can distort timing and morphology features.",
+      "Training labels are assigned per recording window, which is a simplifying assumption."
+    ]
+  },
+  about: {
+    eyebrow: "About",
+    title: "What this system does",
+    opening: "Core capability",
+    headline: "Continuous, cuffless blood pressure monitoring from wearable signals.",
+    body: "The system integrates sensing, preprocessing, feature extraction, machine learning inference, cloud persistence, and real-time visualization in a single end-to-end pipeline.",
+    purpose: "Purpose",
+    purposeBody:
+      "Estimate systolic and diastolic blood pressure from ECG, PPG, and motion signals without an inflatable cuff, making the complete engineering pipeline visible and measurable.",
+    showFirst: "Live monitoring",
+    showFirstBody: "Stream ECG/PPG data from the ESP32 and receive real-time SBP/DBP predictions in the Live view.",
+    showSecond: "Historical analytics",
+    showSecondBody: "Review stored predictions, filter by device or date range, track trends, and export data as CSV.",
+    showThird: "Model methodology",
+    showThirdBody: "Inspect the trained model's feature families, performance metrics, and clinical classification bands.",
+    note: "Clinical note",
+    noteBody:
+      "This system is designed for research and demonstration purposes. It is not calibrated or certified for medical diagnosis. Predictions depend on signal quality — a stable ECG/PPG segment is required before each window is processed."
+  },
+  auth: {
+    signInTitle: "Sign in to view telemetry",
+    missingEnv: "Dashboard configuration missing",
+    missingEnvBody: "The required environment variables are not set. Please check your dashboard configuration and restart.",
+    signIn: "Sign in",
+    signUp: "Sign up",
+    email: "Email",
+    password: "Password",
+    confirmPassword: "Confirm password",
+    show: "Show",
+    hide: "Hide",
+    copyUserId: "Copy account ID",
+    signOut: "Sign out",
+    resetSession: "Reset saved session"
+  },
+  bp: {
+    waiting: "Waiting",
+    high: "High",
+    elevated: "Elevated",
+    inRange: "In range",
+    waitingDetail: "No prediction window yet",
+    highDetail: "Above common hypertension threshold",
+    elevatedDetail: "Watch trend and repeat windows",
+    inRangeDetail: "Current estimate is below alert threshold"
+  },
+  chart: {
+    needTwo: "Trend needs at least two windows.",
+    needTwoBody: "Predictions arrive once each buffered window is processed.",
+    sbp: "SBP",
+    dbp: "DBP",
+    threshold: "SBP threshold {value}",
+    windows: "{count} windows",
+    dailyEmpty: "No daily aggregates yet.",
+    dailyEmptyBody: "Daily trend bars appear once windows span more than one calendar day.",
+    dailyAvgSbp: "Daily avg SBP",
+    dailyAvgDbp: "Daily avg DBP",
+    windowsCount: "{count} window(s)"
+  },
+  table: {
+    time: "time",
+    device: "device",
+    sbp: "SBP",
+    dbp: "DBP",
+    source: "source",
+    sigmaSbp: "σ SBP",
+    sigmaDbp: "σ DBP",
+    id: "id"
+  },
+  error: {
+    eyebrow: "Dashboard error",
+    title: "This view could not load",
+    retry: "Try again",
+    recovery: "Recovery steps",
+    recoveryBody: "Refresh this route, confirm FastAPI/Supabase environment variables, then retry.",
+    unknown: "Unknown dashboard error"
+  }
+} as const;
+
+/** All leaf strings are `string` so locales can use different text (e.g. Amharic). */
+type DeepMessages<T> = T extends readonly (readonly [string, string])[]
+  ? readonly (readonly [string, string])[]
+  : T extends readonly string[]
+    ? readonly string[]
+    : T extends object
+      ? { [K in keyof T]: DeepMessages<T[K]> }
+      : string;
+
+export type Messages = DeepMessages<typeof en>;

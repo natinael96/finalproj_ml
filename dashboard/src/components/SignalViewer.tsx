@@ -7,9 +7,11 @@ import {
   useRawBatches, useDeviceList, useCycleList,
   useMultiCycleBatches, averageSignals,
 } from "@/lib/rawBatches";
-import { formatShortTime } from "@/lib/format";
+import { formatInteger, formatShortTime } from "@/lib/format";
 import { useDeviceLabels } from "@/lib/deviceLabels";
 import { useCycleLabels } from "@/lib/cycleLabels";
+import { useTelemetry } from "@/lib/telemetry";
+import type { TelemetryWindow } from "@/lib/types";
 
 type TabId = "ecg" | "ppg" | "accel" | "all";
 type AggMode = "overlay" | "average";
@@ -22,6 +24,11 @@ const PALETTE = [
   "var(--warn)",
   "oklch(60% 0.18 290)",
 ];
+
+function predictionLabel(row: TelemetryWindow | null | undefined) {
+  if (!row || row.sbp_pred == null || row.dbp_pred == null) return null;
+  return `${formatInteger(row.sbp_pred)}/${formatInteger(row.dbp_pred)} mmHg`;
+}
 
 export function SignalViewer({ device: initialDevice }: { device?: string }) {
   const [tab, setTab] = useState<TabId>("all");
@@ -39,6 +46,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
   const { displayName } = useDeviceLabels();
   const { customLabel } = useCycleLabels();
   const { cycles, loading: cyclesLoading, reload: reloadCycles } = useCycleList(selectedDevice);
+  const { rows: telemetryRows } = useTelemetry({ enabled: true, limit: 500, realtime: true });
   const { signals, loading, error, reload } = useRawBatches({
     device: selectedDevice,
     cycleId: compareMode ? "" : selectedCycle,
@@ -51,6 +59,39 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
     for (const c of cycles) m[c.cycle_id] = c.label;
     return m;
   }, [cycles]);
+
+  const latestPredictionByDevice = useMemo(() => {
+    const map = new Map<string, TelemetryWindow>();
+    for (const row of telemetryRows) {
+      if (!row.device_id || row.sbp_pred == null || row.dbp_pred == null) continue;
+      const current = map.get(row.device_id);
+      const rowTime = new Date(row.created_at).getTime();
+      const currentTime = current ? new Date(current.created_at).getTime() : Number.NEGATIVE_INFINITY;
+      if (!current || rowTime > currentTime) map.set(row.device_id, row);
+    }
+    return map;
+  }, [telemetryRows]);
+
+  const latestPrediction = useMemo(() => {
+    return telemetryRows.find((row) => row.sbp_pred != null && row.dbp_pred != null) ?? null;
+  }, [telemetryRows]);
+
+  const predictionByCycle = useMemo(() => {
+    if (!selectedDevice) return new Map<string, TelemetryWindow>();
+    const deviceRows = telemetryRows.filter((row) => row.device_id === selectedDevice);
+    const map = new Map<string, TelemetryWindow>();
+    for (const cycle of cycles) {
+      const match = deviceRows.reduce<TelemetryWindow | null>((best, row) => {
+        if (row.ts_ms_start == null || row.sbp_pred == null || row.dbp_pred == null) return best;
+        const diff = Math.abs(row.ts_ms_start - cycle.ts_ms_start);
+        if (diff > 180_000) return best;
+        if (!best || diff < Math.abs((best.ts_ms_start ?? 0) - cycle.ts_ms_start)) return row;
+        return best;
+      }, null);
+      if (match) map.set(cycle.cycle_id, match);
+    }
+    return map;
+  }, [cycles, telemetryRows, selectedDevice]);
 
   const { results: multiResults, loading: multiLoading } = useMultiCycleBatches(
     selectedDevice,
@@ -115,6 +156,7 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
 
   const isCompareReady = compareMode && multiResults.length >= 2 && !multiLoading;
   const showCharts = !compareMode ? !!signals : isCompareReady;
+  const latestPredictionText = predictionLabel(latestPrediction);
 
   return (
     <Card>
@@ -174,14 +216,25 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
         ) : (
           <div className="devicePillRow">
             <button type="button" className={`devicePill${selectedDevice === "" ? " active" : ""}`}
-              onClick={() => changeDevice("")}>All</button>
-            {devices.map((d) => (
-              <button key={d} type="button"
-                className={`devicePill${selectedDevice === d ? " active" : ""}`}
-                onClick={() => changeDevice(d)} title={d}>
-                <span className="devicePillDot" />{displayName(d)}
-              </button>
-            ))}
+              onClick={() => changeDevice("")} style={{ maxWidth: 280 }}>
+              All
+              {latestPredictionText && (
+                <span style={{ opacity: 0.72, fontWeight: 600, flexShrink: 0 }}>{latestPredictionText}</span>
+              )}
+            </button>
+            {devices.map((d) => {
+              const predText = predictionLabel(latestPredictionByDevice.get(d));
+              return (
+                <button key={d} type="button"
+                  className={`devicePill${selectedDevice === d ? " active" : ""}`}
+                  onClick={() => changeDevice(d)} title={predText ? `${d} · ${predText}` : d}
+                  style={{ maxWidth: 280 }}>
+                  <span className="devicePillDot" />
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{displayName(d)}</span>
+                  {predText && <span style={{ opacity: 0.72, fontWeight: 600, flexShrink: 0 }}>{predText}</span>}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
@@ -210,12 +263,13 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
                   ? PALETTE[selectedCycles.indexOf(c.cycle_id) % PALETTE.length]
                   : undefined;
                 const displayCycleName = customLabel(c.cycle_id) ?? `Cycle ${cycles.length - i}`;
+                const predText = predictionLabel(predictionByCycle.get(c.cycle_id));
                 return (
                   <button key={c.cycle_id} type="button"
                     className={`devicePill cyclePill${isSelected ? " active" : ""}`}
-                    style={cycleColor ? { background: cycleColor, borderColor: cycleColor, color: "white" } : undefined}
+                    style={cycleColor ? { background: cycleColor, borderColor: cycleColor, color: "white", maxWidth: 280 } : { maxWidth: 280 }}
                     onClick={() => compareMode ? toggleCycleSelect(c.cycle_id) : setSelectedCycle(c.cycle_id)}
-                    title={`${c.batch_count} batches · ${c.cycle_id}`}>
+                    title={`${c.batch_count} batches${predText ? ` · ${predText}` : ""} · ${c.cycle_id}`}>
                     {compareMode && isSelected && (
                       <span style={{ fontWeight: 900, marginRight: 2 }}>
                         {selectedCycles.indexOf(c.cycle_id) + 1}
@@ -224,7 +278,8 @@ export function SignalViewer({ device: initialDevice }: { device?: string }) {
                     <span className="devicePillDot" style={{
                       background: cycleColor ?? (isSelected ? "var(--paper)" : "var(--accent2)")
                     }} />
-                    {displayCycleName}
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{displayCycleName}</span>
+                    {predText && <span style={{ opacity: 0.72, fontWeight: 600, flexShrink: 0 }}>{predText}</span>}
                   </button>
                 );
               })}

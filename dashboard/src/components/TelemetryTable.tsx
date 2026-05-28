@@ -32,7 +32,7 @@ export function TelemetryTable({
   mode?: DashboardMode;
 }) {
   const t = useT();
-  const { displayName } = useDeviceLabels();
+  const { labels, displayName } = useDeviceLabels();
   if (rows.length === 0) return <TelemetryEmptyState />;
 
   const cycleNums   = assignCycles(rows);
@@ -63,6 +63,9 @@ export function TelemetryTable({
             const sbp    = row.sbp_pred;
             const dbp    = row.dbp_pred;
             const cycleN = cycleNums[i];
+            const deviceId = row.device_id ?? "";
+            const deviceName = displayName(deviceId);
+            const hasCustomDeviceName = Boolean(deviceId && labels[deviceId]);
             // Label cycles newest = "Latest", older ones counted backwards
             const cycleLabel = maxCycle - cycleN + 1 === 1 ? "Latest" : `C ${maxCycle - cycleN + 1}`;
 
@@ -77,8 +80,17 @@ export function TelemetryTable({
                 <td className="nowrap" style={{ fontSize: 13 }}>{formatTime(row.created_at)}</td>
 
                 <td style={{ color: "var(--muted)", fontSize: 13 }}
-                  title={row.device_id ?? undefined}>
-                  {displayName(row.device_id ?? "")}
+                  title={deviceId || undefined}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <span style={{ color: "var(--ink)", fontWeight: hasCustomDeviceName ? 650 : 500 }}>
+                      {deviceName || "-"}
+                    </span>
+                    {hasCustomDeviceName && (
+                      <span style={{ color: "var(--faint)", fontSize: 11, fontFamily: "Cascadia Code, Consolas, monospace" }}>
+                        {deviceId}
+                      </span>
+                    )}
+                  </div>
                 </td>
 
                 <td style={{ textAlign: "center" }}>
