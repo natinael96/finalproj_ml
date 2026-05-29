@@ -299,26 +299,44 @@ def _supabase_insert_raw_batch(row: Dict[str, object]) -> None:
 def _supabase_register_device_name(device_id: str, user_id: str, name: str) -> None:
     """Insert a device row with the firmware-provided label only if none exists yet.
     Silently ignores errors so it never blocks the ingest path."""
-    if not supabase_client or not name.strip():
+    cfg = supabase_rest_config()
+    label = name.strip()
+    if not cfg or not label:
         return
     try:
-        existing = supabase_client.table("devices") \
-            .select("id,label") \
-            .eq("user_id", user_id) \
-            .eq("device_id", device_id) \
-            .limit(1) \
-            .execute()
-        if not existing.data:
-            # First time seeing this device — register it with the firmware name
-            supabase_client.table("devices").insert(
-                {"user_id": user_id, "device_id": device_id, "label": name.strip()}
-            ).execute()
-        elif existing.data[0].get("label") is None:
-            # Row exists but user has never set a label — fill it from firmware
-            supabase_client.table("devices").update({"label": name.strip()}) \
-                .eq("user_id", user_id) \
-                .eq("device_id", device_id) \
-                .execute()
+        endpoint = f"{cfg['url']}/rest/v1/devices"
+        headers = {
+            "apikey": cfg["key"],
+            "Authorization": f"Bearer {cfg['key']}",
+            "Content-Type": "application/json",
+        }
+        params = {
+            "select": "id,label",
+            "user_id": f"eq.{user_id}",
+            "device_id": f"eq.{device_id}",
+            "limit": "1",
+        }
+        existing = requests.get(endpoint, headers=headers, params=params, timeout=10)
+        if existing.status_code >= 400:
+            return
+        rows = existing.json()
+        if not rows:
+            insert_headers = {**headers, "Prefer": "return=minimal"}
+            requests.post(
+                endpoint,
+                headers=insert_headers,
+                json={"user_id": user_id, "device_id": device_id, "label": label},
+                timeout=10,
+            )
+        elif rows[0].get("label") is None:
+            patch_headers = {**headers, "Prefer": "return=minimal"}
+            requests.patch(
+                endpoint,
+                headers=patch_headers,
+                params={"user_id": f"eq.{user_id}", "device_id": f"eq.{device_id}"},
+                json={"label": label},
+                timeout=10,
+            )
     except Exception:
         pass  # non-critical; don't break the ingest response
 
